@@ -11,6 +11,7 @@ from mcp.server.fastmcp import FastMCP
 
 import spine_brain
 import spine_cli
+import spine_critic
 import spine_engineering_loop
 import spine_motion_intelligence
 import spine_preview
@@ -42,6 +43,7 @@ def spine_doctor() -> dict:
         "smart_animation_director": True,
         "animation_intelligence": 4,
         "engineering_loop": 7,
+        "deterministic_critic": 1,
         "real_bezier_curves": True,
         "frame_grid_authoring": 30,
         "psd_semantic_intelligence": 3,
@@ -49,6 +51,7 @@ def spine_doctor() -> dict:
         "pose_beat_planning": True,
         "animation_quality_audit": True,
         "render_diagnose_revise": True,
+        "critic_checks": [2, 3, 5, 7, 8],
         "smart_rig_profiles": ["biped", "quadruped", "winged", "prop", "*_2_5d"],
         "secondary_systems": ["hair", "cloth", "tail", "wing"],
     }
@@ -213,11 +216,23 @@ def audit_preview(preview_gif: str, reference_gif: str = "") -> dict:
 
 
 @mcp.tool()
+def deterministic_critic(runtime_json: str, motion_plan: dict | None = None,
+                         secondary_chains: dict | None = None, fps: int = 30) -> dict:
+    """Run deterministic curve checks for anticipation, spacing, arcs, drag order, and overshoot."""
+    return spine_critic.audit(
+        runtime_json, motion_plan=motion_plan,
+        secondary_chains=secondary_chains, fps=fps,
+    )
+
+
+@mcp.tool()
 def engineering_review(runtime_json: str, images_dir: str, out_dir: str,
-                       motion_plan: dict | None = None) -> dict:
-    """Render representative beats, diagnose motion defects, and return revision actions."""
+                       motion_plan: dict | None = None,
+                       secondary_chains: dict | None = None) -> dict:
+    """Render representative beats, run deterministic critic checks, and return revision actions."""
     return spine_engineering_loop.inspect_build(
-        runtime_json, images_dir, out_dir, motion_plan=motion_plan,
+        runtime_json, images_dir, out_dir,
+        motion_plan=motion_plan, secondary_chains=secondary_chains,
     )
 
 
