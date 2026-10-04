@@ -43,7 +43,7 @@ def test_preview_screen_blend_does_not_create_black_box(tmp_path):
         "skeleton": {"width": 16, "height": 16},
         "bones": [{"name": "root"}],
         "slots": [{"name": "glow", "bone": "root", "attachment": "glow", "blend": "screen"}],
-        "skins": [{"name": "default", "attachments": {"glow": {"glow": {"width": 8, "height": 8}}}}],
+        "skins": [{"name": "default", "attachments": {"glow": {"glow": {"width": 8, "height": 8, "y": 8}}}}],
         "animations": {"idle": {}},
     }
     frame = spine_preview.render_frame(data, str(images), "idle", 0, transparent=False)
