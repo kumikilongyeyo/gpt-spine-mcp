@@ -16,10 +16,6 @@ classifiers = [
 ]
 
 dependencies = [
-  # Upper bound, and it is load-bearing. mcp 2.0 removed mcp.server.fastmcp,
-  # which is the import this server is built on. An open ">=1.2" resolved to
-  # 1.27 on the machine this was written on and to 2.0 on a fresh install, so
-  # the package worked for its author and crashed on import for everybody else.
   "mcp[cli]>=1.2,<2",
   "pillow>=10",
   "psd-tools[composite]>=1.9",
@@ -30,9 +26,6 @@ Homepage = "https://github.com/kumikilongyeyo/gpt-spine-mcp"
 Repository = "https://github.com/kumikilongyeyo/gpt-spine-mcp"
 Upstream = "https://github.com/egorfedorov/spine-mcp"
 
-# The entry point is what makes `uvx --from git+https://... spine-mcp` work, and
-# what the mozg plugin launches. Without it the server can only be started by
-# pointing an interpreter at a file on a path only its author has.
 [project.scripts]
 gpt-spine-mcp = "server:main"
 gpt-spine = "gpt_spine:main"
@@ -47,11 +40,11 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-# Flat layout: four modules that import each other by name.
 include = [
   "server.py", "spine_cli.py", "spine_rig.py", "spine_preview.py",
   "spine_validate.py", "spine_quality.py", "spine_motion.py", "spine_fx.py",
-  "spine_spec.py", "workflow.py", "gpt_spine.py", "openai_agent.py",
+  "spine_spec.py", "spine_brain.py", "spine_smart_rig.py", "workflow.py",
+  "gpt_spine.py", "openai_agent.py",
 ]
 
 [tool.pytest.ini_options]
