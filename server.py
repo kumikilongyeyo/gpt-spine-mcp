@@ -1,15 +1,8 @@
 #!/usr/bin/env python
-"""Spine MCP server — production Spine 2D rigging, motion, FX, and smart planning.
-
-The original deterministic tools remain available. ``understand_animation`` and
-``smart_build`` add an opt-in animation-director layer that translates loose art
-direction into a rig profile, motion states, FX, adaptive meshes, joint weights,
-and practical character IK before the editable Spine project is created.
-"""
+"""Spine MCP server — production Spine 2D rigging, motion, FX, and PSD semantics."""
 from __future__ import annotations
 
 import glob
-import json
 import os
 import sys
 
@@ -21,6 +14,7 @@ import spine_cli
 import spine_preview
 import spine_quality
 import spine_rig
+import spine_semantics
 import spine_spec
 import workflow
 from spine_validate import validate_rig
@@ -44,81 +38,101 @@ def spine_doctor() -> dict:
         "spine_version": spine_cli.version() if spine_cli.available() else None,
         "deps": deps,
         "smart_animation_director": True,
+        "psd_semantic_intelligence": 3,
         "smart_rig_profiles": ["biped", "quadruped", "winged", "prop", "*_2_5d"],
+        "secondary_systems": ["hair", "cloth", "tail", "wing"],
     }
 
 
 @mcp.tool()
-def inspect_source(source: str, source_group: str = "") -> dict:
-    """List PSD/export parts before rigging. Always inspect unfamiliar art first."""
+def inspect_source(source: str, source_group: str = "", naming_profile: str = "") -> dict:
+    """Inspect source art and return layer structure plus V3 semantic interpretation."""
     if source.lower().endswith(".psd"):
         import tempfile
-        return spine_rig.inspect_psd(source, tempfile.mkdtemp(), source_group or None)
-    parts, draw, _ = spine_rig._read_photoshop_export(source)
-    families = {}
-    for name in draw:
-        base = name
-        for suffix in spine_rig.SUFFIX:
-            if name.lower().endswith(suffix):
-                base = name[:-len(suffix)]
-        families.setdefault(base, []).append(name)
-    return {
-        "parts": draw,
-        "count": len(draw),
-        "head_state_families": {base: values for base, values in families.items() if len(values) > 1},
-    }
+        inspection = spine_rig.inspect_psd(source, tempfile.mkdtemp(), source_group or None)
+    else:
+        parts, draw, _ = spine_rig._read_photoshop_export(source)
+        families = {}
+        for name in draw:
+            base = name
+            for suffix in spine_rig.SUFFIX:
+                if name.lower().endswith(suffix):
+                    base = name[:-len(suffix)]
+            families.setdefault(base, []).append(name)
+        inspection = {
+            "parts": draw,
+            "count": len(draw),
+            "head_state_families": {base: values for base, values in families.items() if len(values) > 1},
+        }
+    naming, used = spine_semantics.load_profile(naming_profile, source)
+    inspection["semantic_scene"] = spine_semantics.analyze_inspection(inspection, naming)
+    inspection["naming_profile"] = used
+    return inspection
+
+
+@mcp.tool()
+def inspect_psd_semantics(source: str, source_group: str = "", naming_profile: str = "") -> dict:
+    """Return only the semantic scene graph for a PSD/export before rigging.
+
+    The scene graph classifies body parts, face pieces, hair types, cloth/tails/wings,
+    side, depth, material, state variants, secondary-motion needs and confidence.
+    """
+    inspection = inspect_source(source, source_group, naming_profile)
+    return inspection["semantic_scene"]
+
+
+@mcp.tool()
+def save_naming_profile(path: str, aliases: dict | None = None,
+                        exact: dict | None = None, states: dict | None = None) -> dict:
+    """Teach GPT Spine a studio/user PSD naming vocabulary.
+
+    Example aliases: {"hair": ["buhok", "hr"], "hand": ["kamay"]}.
+    Exact mappings override inference, e.g. {"HFRONT": "hair_front_bang"}.
+    A file named spine_naming.json next to the PSD is auto-detected by smart_build.
+    """
+    return spine_semantics.save_profile(path, {
+        "aliases": aliases or {}, "exact": exact or {}, "states": states or {},
+    })
 
 
 def _inspection_parts(inspection: dict) -> list[str]:
+    if inspection.get("layers"):
+        return [layer.get("layer_path") or layer.get("attachment", "")
+                for layer in inspection["layers"] if layer.get("layer_path") or layer.get("attachment")]
     if inspection.get("parts"):
         return list(inspection["parts"])
-    return [layer.get("attachment", "") for layer in inspection.get("layers", []) if layer.get("attachment")]
+    return []
 
 
 @mcp.tool()
-def understand_animation(request: str, source: str = "", source_group: str = "") -> dict:
-    """Interpret loose/typo-heavy animation art direction into a production plan.
-
-    Examples: "rig this human clean mesh weights run attack depth shimmer" or
-    "animal idle/run with tail overlap, glow particles, 2.5d flip". When source
-    is supplied its part names are used to improve biped/quadruped/winged inference.
-    """
-    inspection = inspect_source(source, source_group) if source else None
+def understand_animation(request: str, source: str = "", source_group: str = "",
+                         naming_profile: str = "") -> dict:
+    """Interpret loose animation art direction using source semantics when available."""
+    inspection = inspect_source(source, source_group, naming_profile) if source else None
     plan = spine_brain.plan_animation(request, _inspection_parts(inspection or {}))
     if inspection:
         plan["inspection"] = inspection
+        plan["semantic_scene"] = inspection.get("semantic_scene")
     return plan
 
 
 @mcp.tool()
 def smart_build(source: str, out_dir: str, request: str, name: str = "",
                 source_group: str = "", make_editable: bool = True,
-                make_preview: bool = True) -> dict:
-    """Natural-language production build: understand -> rig -> animate -> QA.
-
-    This is the preferred high-level tool for character/animal/2.5D work. It
-    infers animation states, FX packs, mesh/weight cleanup, rig profile, clipping,
-    and IK from the request, then runs the full validated workflow. The returned
-    ``director_plan`` records every assumption so the build stays editable and
-    auditable instead of hiding guesses.
-    """
-    inspection = inspect_source(source, source_group)
+                make_preview: bool = True, naming_profile: str = "") -> dict:
+    """Natural-language build with PSD semantics, adaptive rigging, animation and QA."""
+    inspection = inspect_source(source, source_group, naming_profile)
     plan = spine_brain.plan_animation(request, _inspection_parts(inspection))
     result = workflow.run_pipeline(
         source, out_dir, name or None,
-        animations=plan["animations"],
-        clean_mesh=plan["clean_mesh"],
-        auto_weight=plan["auto_weight"],
-        ik=plan["ik"],
-        clipping=plan["clipping"],
-        slot_presets=plan["slot_presets"],
-        fx_presets=plan["fx_presets"],
-        source_group=source_group or None,
-        make_editable=make_editable,
-        make_preview=make_preview,
-        rig_profile=plan["rig_profile"],
+        animations=plan["animations"], clean_mesh=plan["clean_mesh"],
+        auto_weight=plan["auto_weight"], ik=plan["ik"], clipping=plan["clipping"],
+        slot_presets=plan["slot_presets"], fx_presets=plan["fx_presets"],
+        source_group=source_group or None, make_editable=make_editable,
+        make_preview=make_preview, rig_profile=plan["rig_profile"],
         mesh_quality=plan["mesh_quality"],
         max_weight_influences=plan["max_weight_influences"],
+        naming_profile=naming_profile,
     )
     result["director_plan"] = plan
     result["source_inspection"] = inspection
@@ -158,7 +172,8 @@ def build_workflow(source: str, out_dir: str, name: str = "",
                    fx_presets: list[str] | None = None,
                    source_group: str = "", make_editable: bool = True,
                    make_preview: bool = True, rig_profile: str = "simple",
-                   mesh_quality: str = "adaptive", max_weight_influences: int = 2) -> dict:
+                   mesh_quality: str = "adaptive", max_weight_influences: int = 2,
+                   naming_profile: str = "") -> dict:
     """Run the complete validated workflow, optionally with a smart rig profile."""
     return workflow.run_pipeline(
         source, out_dir, name or None,
@@ -169,6 +184,7 @@ def build_workflow(source: str, out_dir: str, name: str = "",
         make_editable=make_editable, make_preview=make_preview,
         rig_profile=rig_profile, mesh_quality=mesh_quality,
         max_weight_influences=max_weight_influences,
+        naming_profile=naming_profile,
     )
 
 
@@ -251,10 +267,8 @@ def batch(roster_dir: str, out_root: str, kind: str = "symbol",
                                            kind, None, make_editable))
         except Exception as exc:
             errors.append({"name": name, "error": str(exc)})
-    return {
-        "rigged": [result["name"] for result in results],
-        "count": len(results), "errors": errors, "results": results,
-    }
+    return {"rigged": [result["name"] for result in results],
+            "count": len(results), "errors": errors, "results": results}
 
 
 def main() -> None:
