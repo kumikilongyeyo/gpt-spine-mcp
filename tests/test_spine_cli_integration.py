@@ -16,7 +16,8 @@ def test_installed_spine_can_import_and_export(tmp_path: Path):
     result = run_pipeline(
         str(source), str(out), "smoke", animations=["intro", "mega_win"],
         clean_mesh=True, auto_weight=True, ik=True, clipping=True,
-        slot_presets=["pulse"], make_editable=True, export_project=True,
+        slot_presets=["pulse"], fx_presets=["glow_flash", "particle_explosion"],
+        make_editable=True, export_project=True,
     )
     assert result["editable_project"]["ok"], result["editable_project"]
     assert (out / "smoke.spine").is_file()

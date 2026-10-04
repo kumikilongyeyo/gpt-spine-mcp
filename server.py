@@ -28,6 +28,7 @@ import spine_rig
 import spine_cli
 import spine_preview
 import spine_quality
+import spine_spec
 import workflow
 from spine_validate import validate_rig
 
@@ -75,6 +76,7 @@ def rig_and_animate(source: str, out_dir: str, name: str = "", kind: str = "symb
                     clean_mesh: bool = False, auto_weight: bool = False,
                     ik: bool = False, clipping: bool = False,
                     slot_presets: list[str] | None = None,
+                    fx_presets: list[str] | None = None,
                     source_group: str = "") -> dict:
     """Build a rigged + animated Spine skeleton from a cut-up character.
 
@@ -90,7 +92,7 @@ def rig_and_animate(source: str, out_dir: str, name: str = "", kind: str = "symb
     res = spine_rig.build_rig(source, out_dir, name or None, kind, anims,
                               clean_mesh=clean_mesh, auto_weight=auto_weight,
                               ik=ik, clipping=clipping, slot_presets=slot_presets,
-                              source_group=source_group or None)
+                              source_group=source_group or None, fx_presets=fx_presets)
     if make_editable and spine_cli.available():
         proj = os.path.join(out_dir, f"{res['name']}.spine")
         res["editable_project"] = spine_cli.make_project(res["files"]["json"], proj)
@@ -106,6 +108,7 @@ def build_workflow(source: str, out_dir: str, name: str = "",
                    clean_mesh: bool = False, auto_weight: bool = False,
                    ik: bool = False, clipping: bool = False,
                    slot_presets: list[str] | None = None,
+                   fx_presets: list[str] | None = None,
                    source_group: str = "",
                    make_editable: bool = True, make_preview: bool = True) -> dict:
     """Run the complete production workflow: rig, animate, mesh/weight, add
@@ -114,7 +117,7 @@ def build_workflow(source: str, out_dir: str, name: str = "",
     return workflow.run_pipeline(
         source, out_dir, name or None, rig_only=rig_only, animations=animations,
         clean_mesh=clean_mesh, auto_weight=auto_weight, ik=ik, clipping=clipping,
-        slot_presets=slot_presets, make_editable=make_editable,
+        slot_presets=slot_presets, fx_presets=fx_presets, make_editable=make_editable,
         source_group=source_group or None,
         make_preview=make_preview,
     )
@@ -125,6 +128,25 @@ def audit_preview(preview_gif: str, reference_gif: str = "") -> dict:
     """Reject blank/static previews and compare duration, motion, and occupancy
     against an optional art-direction reference before a delivery is accepted."""
     return spine_quality.audit_preview(preview_gif, reference_gif or None)
+
+
+@mcp.tool()
+def apply_motion_spec(runtime_json: str, out_json: str, motion_spec: dict) -> dict:
+    """Compile an explicit numeric motion spec into a Spine skeleton.
+
+    Inspect the source/project first, translate art direction into timed bone and
+    slot tracks with named eases, then call this tool. Specs contain fps, clips,
+    optional handoffs, and bone/slot keys. This validates target names, curve
+    generation, frame alignment, intro→loop handoffs, and loop seams.
+    """
+    return spine_spec.compile_motion_spec(runtime_json, out_json, motion_spec)
+
+
+@mcp.tool()
+def validate_motion(runtime_json: str, clips: list[str] | None = None,
+                    handoffs: list[dict] | None = None) -> dict:
+    """Audit authored clips for frame-grid, curve, handoff, and loop-seam errors."""
+    return spine_spec.validate_motion_spec(runtime_json, clips, handoffs)
 
 
 @mcp.tool()

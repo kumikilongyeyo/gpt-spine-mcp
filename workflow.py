@@ -16,6 +16,7 @@ def run_pipeline(source: str, out_dir: str, name: str | None = None,
                  ik: bool = False, clipping: bool = False,
                  slot_presets: list[str] | None = None,
                  source_group: str | None = None,
+                 fx_presets: list[str] | None = None,
                  make_editable: bool = True, make_preview: bool = True,
                  export_project: bool = True) -> dict:
     source = os.path.abspath(os.path.expanduser(source))
@@ -27,6 +28,7 @@ def run_pipeline(source: str, out_dir: str, name: str | None = None,
         source, out_dir, name, anims=requested, clean_mesh=clean_mesh,
         auto_weight=auto_weight, ik=ik, clipping=clipping,
         slot_presets=[] if rig_only else slot_presets, source_group=source_group,
+        fx_presets=[] if rig_only else fx_presets,
     )
 
     images_dir = os.path.join(out_dir, "images")
@@ -64,6 +66,7 @@ def run_pipeline(source: str, out_dir: str, name: str | None = None,
         "rig_only": rig_only, "clean_mesh": clean_mesh, "auto_weight": auto_weight,
         "ik": ik, "clipping": clipping, "slot_presets": slot_presets or [],
         "source_group": source_group,
+        "fx_presets": fx_presets or [],
     }
     report["spine_cli"] = {"available": spine_cli.available(), "path": spine_cli.SPINE_BIN}
     report_path = write_report(report, os.path.join(out_dir, "rig_report.json"))

@@ -23,6 +23,8 @@ from __future__ import annotations
 import json, os, glob, re, shutil
 from PIL import Image
 
+import spine_fx
+
 SUFFIX = ("_win", "_blink")
 
 
@@ -219,7 +221,8 @@ def build_rig(source: str, out_dir: str, name: str | None = None,
               *, clean_mesh: bool = False, auto_weight: bool = False,
               ik: bool = False, clipping: bool = False,
               slot_presets: list[str] | None = None,
-              source_group: str | None = None) -> dict:
+              source_group: str | None = None,
+              fx_presets: list[str] | None = None) -> dict:
     """Build the skeleton. `source` is an export folder or a .psd. Returns a
     summary dict {name, width, height, bones, slots, head_slot, variants, anims,
     files}."""
@@ -233,6 +236,19 @@ def build_rig(source: str, out_dir: str, name: str | None = None,
         parts, draw, images_dir = _read_photoshop_export(source)
     if not parts:
         raise ValueError(f"no parts found in {source}")
+
+    # A .spine project never embeds its bitmaps. Establish the final portable
+    # image directory before atlas generation or FX synthesis, and make every
+    # later step read from that exact delivery location.
+    portable_images = os.path.join(out_dir, "images")
+    os.makedirs(portable_images, exist_ok=True)
+    for part in parts.values():
+        source_image = os.path.abspath(os.path.join(images_dir, f"{part['file']}.png"))
+        target_image = os.path.abspath(os.path.join(portable_images, f"{part['file']}.png"))
+        os.makedirs(os.path.dirname(target_image), exist_ok=True)
+        if source_image != target_image:
+            shutil.copy2(source_image, target_image)
+    images_dir = portable_images
 
     # detect head-state families: base + base_win + base_blink
     fam = {}
@@ -258,6 +274,7 @@ def build_rig(source: str, out_dir: str, name: str | None = None,
     W, H = maxX - minX, maxY - minY
     norm = {n: dict(cx=p["x"] - cx0, cy=p["y"] - minY, w=p["w"], h=p["h"], file=p["file"])
             for n, p in parts.items()}
+    norm.update(spine_fx.generate_assets(images_dir, fx_presets or [], W, H))
 
     cls = {n: _classify(n, state_bases) for n in draw_final}
     FIRE = {n for n in draw_final if "fire" in n.lower()}
@@ -293,16 +310,6 @@ def build_rig(source: str, out_dir: str, name: str | None = None,
     all_regions = list(norm.keys())
     MAXW, PAD = 1024, 2
     imgs = {n: Image.open(f"{images_dir}/{norm[n]['file']}.png").convert("RGBA") for n in all_regions}
-    # Editable Spine projects reference loose images, not pixels embedded inside
-    # the .spine file. Always place those images beside the final project so a
-    # copied delivery does not retain a hidden dependency on the source folder.
-    portable_images = os.path.join(out_dir, "images")
-    os.makedirs(portable_images, exist_ok=True)
-    for n in all_regions:
-        source_image = os.path.abspath(f"{images_dir}/{norm[n]['file']}.png")
-        target_image = os.path.abspath(os.path.join(portable_images, f"{norm[n]['file']}.png"))
-        if source_image != target_image:
-            shutil.copy2(source_image, target_image)
     # A part WIDER than the page used to be pasted anyway: PIL crops silently at
     # the page edge while the .atlas still declares the full region size, so the
     # overhanging columns sample outside the texture and the renderer clamps them
@@ -417,6 +424,9 @@ def build_rig(source: str, out_dir: str, name: str | None = None,
             "scale": [{"time": 0, "x": 1.12, "y": 0.84}, {"time": 0.16, "x": 0.94, "y": 1.08}, {"time": Pd, "x": 1, "y": 1}],
             "translate": [{"time": 0, "x": 0, "y": 10}, {"time": 0.16, "x": 0, "y": -3}, {"time": Pd, "x": 0, "y": 0}]}}}
 
+    fx_result = spine_fx.install(fx_presets or [], bones, slots, attachments,
+                                 animations, norm, W, H)
+
     # Names outside the built-in set are still useful workflow states.  Generate
     # deterministic, editable starter motion instead of silently dropping them.
     for state in requested:
@@ -503,6 +513,8 @@ def build_rig(source: str, out_dir: str, name: str | None = None,
     if clean_mesh or auto_weight:
         bone_indexes = {b["name"]: i for i, b in enumerate(bones)}
         for slot_name, slot_atts in attachments.items():
+            if slot_name.startswith("__fx_"):
+                continue
             bone_index = bone_indexes[slotbone(slot_name)]
             for entry in slot_atts.values():
                 w, h = float(entry["width"]), float(entry["height"])
@@ -551,5 +563,6 @@ def build_rig(source: str, out_dir: str, name: str | None = None,
         "anims": list(animations), "mesh": clean_mesh or auto_weight,
         "weighted": auto_weight, "ik": bool(constraints), "clipping": clipping,
         "source_group": source_group,
+        "fx": fx_result,
         "files": {"json": f"{out_dir}/{name}.json", "atlas": f"{out_dir}/{name}.atlas", "png": f"{out_dir}/{name}.png"},
     }

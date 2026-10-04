@@ -19,6 +19,7 @@ def make_export(root: Path) -> Path:
         "head_win": (0, 115, 58, 58),
         "head_blink": (0, 115, 58, 58),
         "fx_glow": (0, 45, 44, 44),
+        "coin": (25, 15, 24, 24),
     }
     for name, (_, _, width, height) in parts.items():
         Image.new("RGBA", (width, height), (220, 90, 120, 255)).save(images / f"{name}.png")
@@ -72,6 +73,24 @@ def test_spine_bin_environment_override(monkeypatch, tmp_path: Path):
     executable.chmod(0o755)
     monkeypatch.setenv("SPINE_BIN", str(executable))
     assert spine_cli.detect_spine_bin() == str(executable)
+
+
+def test_fx_packs_emit_source_coins_curves_and_portable_images(tmp_path: Path):
+    source = make_export(tmp_path)
+    out = tmp_path / "fx"
+    presets = ["coin_splash", "glow_flash", "particle_explosion",
+               "bomb_explosion", "fire", "splash"]
+    result = run_pipeline(str(source), str(out), "fxhero", animations=["idle"],
+                          fx_presets=presets, make_editable=False, make_preview=False)
+    data = json.loads((out / "fxhero.json").read_text())
+    assert set(result["fx"]["presets"]) == set(presets)
+    assert {"fx_coin_splash", "fx_glow_flash", "fx_particle_explosion",
+            "fx_bomb_explosion", "fx_fire", "fx_splash"}.issubset(data["animations"])
+    assert data["skins"][0]["attachments"]["__fx_coin_0"]["__fx_coin_0"]["path"] == "coin"
+    spark = data["animations"]["fx_particle_explosion"]["bones"]["__fx_spark_bone_0"]
+    assert any("curve" in key for key in spark["translate"])
+    assert (out / "images" / "body.png").is_file()
+    assert (out / "images" / "__fx_flash.png").is_file()
 
 
 def test_windows_spine_cli_candidates_prefer_console_executable():

@@ -8,6 +8,7 @@ import sys
 
 import spine_cli
 import spine_quality
+import spine_spec
 from workflow import run_pipeline
 
 
@@ -31,6 +32,8 @@ def build_parser() -> argparse.ArgumentParser:
     rig.add_argument("--ik", action="store_true", help="add an editable IK target and constraint")
     rig.add_argument("--clipping", action="store_true", help="add a full-bounds clipping attachment")
     rig.add_argument("--slot-presets", default=None, help="comma-separated pulse,flash,flicker tracks")
+    rig.add_argument("--fx-presets", default=None,
+                     help="comma-separated coin_splash,glow_flash,particle_explosion,bomb_explosion,fire,splash")
     rig.add_argument("--source-group", help="nested PSD group containing the intended asset set")
     rig.add_argument("--no-editable", action="store_true", help="do not import an editable .spine project")
     rig.add_argument("--no-preview", action="store_true", help="skip preview montage")
@@ -40,6 +43,10 @@ def build_parser() -> argparse.ArgumentParser:
     audit = sub.add_parser("audit-preview", help="reject blank/static previews and compare a reference")
     audit.add_argument("preview")
     audit.add_argument("--reference")
+    spec = sub.add_parser("apply-spec", help="compile a numeric motion spec into Spine JSON")
+    spec.add_argument("runtime_json")
+    spec.add_argument("spec_json")
+    spec.add_argument("out_json")
     agent = sub.add_parser("agent", help="run an OpenAI Agents SDK client against the local MCP server")
     agent.add_argument("prompt", nargs="+", help="instruction for the agent")
     agent.add_argument("--model", default=os.environ.get("OPENAI_MODEL", "gpt-5.4"))
@@ -61,6 +68,12 @@ def main(argv: list[str] | None = None) -> int:
         report = spine_quality.audit_preview(args.preview, args.reference)
         print(json.dumps(report, indent=2))
         return 0 if report["ok"] else 2
+    if args.command == "apply-spec":
+        with open(args.spec_json, encoding="utf-8") as handle:
+            spec_data = json.load(handle)
+        report = spine_spec.compile_motion_spec(args.runtime_json, args.out_json, spec_data)
+        print(json.dumps(report, indent=2))
+        return 0 if report["ok"] else 2
 
     source_name = os.path.splitext(os.path.basename(os.path.abspath(args.source).rstrip(os.sep)))[0]
     name = args.name or source_name
@@ -70,6 +83,7 @@ def main(argv: list[str] | None = None) -> int:
         animations=_csv(args.animations), clean_mesh=args.clean_mesh,
         auto_weight=args.auto_weight, ik=args.ik, clipping=args.clipping,
         slot_presets=_csv(args.slot_presets), make_editable=not args.no_editable,
+        fx_presets=_csv(args.fx_presets),
         source_group=args.source_group,
         make_preview=not args.no_preview, export_project=not args.no_export,
     )

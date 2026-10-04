@@ -18,14 +18,15 @@ def _bone_world(bones, name):
 
 
 def _lerp(kf, t):
-    if t <= kf[0]["time"]:
+    if t <= kf[0].get("time", 0):
         return kf[0]
-    if t >= kf[-1]["time"]:
+    if t >= kf[-1].get("time", 0):
         return kf[-1]
     for i in range(len(kf) - 1):
         a, b = kf[i], kf[i + 1]
-        if a["time"] <= t <= b["time"]:
-            f = (t - a["time"]) / (b["time"] - a["time"])
+        at, bt = a.get("time", 0), b.get("time", 0)
+        if at <= t <= bt:
+            f = (t - at) / (bt - at)
             return {k: (a.get(k, 0) + (b.get(k, 0) - a.get(k, 0)) * f
                         if isinstance(a.get(k, 0), (int, float)) and isinstance(b.get(k, 0), (int, float))
                         else a.get(k))
@@ -43,7 +44,7 @@ def _render(d, images_dir, anim, t, maxpx):
         if "attachment" in ad:
             name = ad["attachment"][0]["name"]
             for k in ad["attachment"]:
-                if k["time"] <= t:
+                if k.get("time", 0) <= t:
                     name = k["name"]
             cur[sn] = name
     bd = {}

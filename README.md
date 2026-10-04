@@ -53,7 +53,7 @@ For an immutable release, replace the URL below with the published fork and pin
 the tag:
 
 ```bash
-uv tool install "gpt-spine-mcp[agents] @ git+https://github.com/kumikilongyeyo/gpt-spine-mcp@v0.6.1"
+uv tool install "gpt-spine-mcp[agents] @ git+https://github.com/kumikilongyeyo/gpt-spine-mcp@v0.7.0"
 codex mcp add gpt-spine -- gpt-spine-mcp
 ```
 
@@ -67,6 +67,7 @@ gpt-spine rig mega_win.psd \
   --ik \
   --clipping \
   --slot-presets pulse,flash,flicker \
+  --fx-presets coin_splash,glow_flash,particle_explosion,bomb_explosion,fire,splash \
   --animations intro,steering,wave,mega_win,celebration
 ```
 
@@ -118,6 +119,8 @@ licensed projects or production assets.
 - `project_info` — licensed CLI project inspection
 - `preview` — fast keyframe montage
 - `audit_preview` — objective blank/static/duration/motion/occupancy delivery gate
+- `apply_motion_spec` — compile model-authored numeric clips with named easing curves
+- `validate_motion` — frame-grid, intro→loop handoff, and loop-seam audit
 - `batch` — process a roster of PhotoshopToSpine exports
 
 ## Rig and animation behavior
@@ -137,6 +140,26 @@ licensed projects or production assets.
 These are deterministic production starters, not an art-director replacement.
 Mesh topology, weights, constraint targets, and clipping shapes should still be
 reviewed on hero assets.
+
+## Authored motion workflow
+
+The MCP does not pretend a preset name can understand art direction. For hero
+animation, the agent first inspects the actual bones and slots, translates the
+description into a numeric JSON motion spec, and calls `apply_motion_spec`.
+Supported named curves are `out`, `in`, `inout`, `sine`, `outback`, and `expo`.
+`validate_motion` then checks frame alignment, exact intro→loop handoffs, and
+loop seams before the editor import/render step.
+
+FX packs are mixable independent animations: `fx_coin_splash`,
+`fx_glow_flash`, `fx_particle_explosion`, `fx_bomb_explosion`, `fx_fire`, and
+`fx_splash`. They use additive white-on-alpha light assets, staggered bones,
+overshoot/follow-through, source coin artwork when available, and authored
+Bezier curves. Procedural fire/smoke are blocking FX; painterly hero effects
+should still be supplied as art and driven by the same motion-spec compiler.
+
+Editable `.spine` files do not embed bitmaps. Always deliver the project beside
+its `images/` folder. GPT Spine copies every source and generated image into the
+final output before import and fails portability validation if any are missing.
 
 ## Input conventions
 
@@ -176,6 +199,7 @@ preview output. Tests do not require a Spine licence or OpenAI API key.
 | `v0.5.1` | macOS/Windows/Linux installers and cross-platform CI |
 | `v0.6.0` | nested PSD groups, semantic inspection, reference preview QA, portable image checks |
 | `v0.6.1` | package QA module and install PSD composite dependencies |
+| `v0.7.0` | numeric motion-spec compiler, curve/seam validation, and mixable FX packs |
 | `v1.0.0` | planned stable workflow after real-asset compatibility testing |
 
 Never move a published tag. Patch a release and add a new tag so a known-good

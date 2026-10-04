@@ -1,6 +1,6 @@
 [project]
 name = "gpt-spine-mcp"
-version = "0.6.1"
+version = "0.7.0"
 description = "OpenAI/Codex MCP workflow for production Spine 2D rigs and animation"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -50,7 +50,8 @@ build-backend = "hatchling.build"
 # Flat layout: four modules that import each other by name.
 include = [
   "server.py", "spine_cli.py", "spine_rig.py", "spine_preview.py",
-  "spine_validate.py", "spine_quality.py", "workflow.py", "gpt_spine.py", "openai_agent.py",
+  "spine_validate.py", "spine_quality.py", "spine_motion.py", "spine_fx.py",
+  "spine_spec.py", "workflow.py", "gpt_spine.py", "openai_agent.py",
 ]
 
 [tool.pytest.ini_options]
