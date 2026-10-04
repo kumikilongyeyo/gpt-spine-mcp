@@ -53,7 +53,7 @@ For an immutable release, replace the URL below with the published fork and pin
 the tag:
 
 ```bash
-uv tool install "gpt-spine-mcp[agents] @ git+https://github.com/kumikilongyeyo/gpt-spine-mcp@v0.7.0"
+uv tool install "gpt-spine-mcp[agents] @ git+https://github.com/kumikilongyeyo/gpt-spine-mcp@v0.7.1"
 codex mcp add gpt-spine -- gpt-spine-mcp
 ```
 
@@ -67,7 +67,7 @@ gpt-spine rig mega_win.psd \
   --ik \
   --clipping \
   --slot-presets pulse,flash,flicker \
-  --fx-presets coin_splash,glow_flash,particle_explosion,bomb_explosion,fire,splash \
+  --fx-presets coin_splash,glow_flash,particle_explosion,bomb_explosion,fire,splash,clipped_shine \
   --animations intro,steering,wave,mega_win,celebration
 ```
 
@@ -152,9 +152,11 @@ loop seams before the editor import/render step.
 
 FX packs are mixable independent animations: `fx_coin_splash`,
 `fx_glow_flash`, `fx_particle_explosion`, `fx_bomb_explosion`, `fx_fire`, and
-`fx_splash`. They use additive white-on-alpha light assets, staggered bones,
+`fx_splash`, plus `fx_clipped_shine`. They use additive white-on-alpha light assets, staggered bones,
 overshoot/follow-through, source coin artwork when available, and authored
-Bezier curves. Procedural fire/smoke are blocking FX; painterly hero effects
+Bezier curves. FX are invisible in the setup pose, alpha is snapped to the
+runtime's 8-bit precision, and clipped shine derives its mask from the target
+art's alpha silhouette. Procedural fire/smoke are blocking FX; painterly hero effects
 should still be supplied as art and driven by the same motion-spec compiler.
 
 Editable `.spine` files do not embed bitmaps. Always deliver the project beside
@@ -200,6 +202,7 @@ preview output. Tests do not require a Spine licence or OpenAI API key.
 | `v0.6.0` | nested PSD groups, semantic inspection, reference preview QA, portable image checks |
 | `v0.6.1` | package QA module and install PSD composite dependencies |
 | `v0.7.0` | numeric motion-spec compiler, curve/seam validation, and mixable FX packs |
+| `v0.7.1` | setup-hidden FX, byte-snapped alpha, and alpha-silhouette clipped shine |
 | `v1.0.0` | planned stable workflow after real-asset compatibility testing |
 
 Never move a published tag. Patch a release and add a new tag so a known-good

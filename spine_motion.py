@@ -36,6 +36,9 @@ def timeline(prop: str, keys: list[tuple]) -> list[dict]:
     for index, raw in enumerate(keys):
         ease = raw[-1] if isinstance(raw[-1], str) else None
         values = list(raw[1:-1] if ease else raw[1:])
+        if prop == "alpha":
+            values = [round(round(max(0, min(1, float(value))) * 255) / 255, 6)
+                      for value in values]
         if len(values) != len(names):
             raise ValueError(f"{prop} expects {len(names)} values, got {len(values)}")
         key = {} if raw[0] == 0 else {"time": round(float(raw[0]), 4)}
@@ -45,6 +48,9 @@ def timeline(prop: str, keys: list[tuple]) -> list[dict]:
         elif ease and ease != "linear" and index + 1 < len(keys):
             nxt = keys[index + 1]
             next_values = list(nxt[1:-1] if isinstance(nxt[-1], str) else nxt[1:])
+            if prop == "alpha":
+                next_values = [round(round(max(0, min(1, float(value))) * 255) / 255, 6)
+                               for value in next_values]
             key["curve"] = sum((curve(float(raw[0]), a, float(nxt[0]), b, ease)
                                 for a, b in zip(values, next_values)), [])
         output.append(key)

@@ -10,7 +10,7 @@ from PIL import Image, ImageDraw, ImageFilter
 from spine_motion import Motion
 
 SUPPORTED = ("coin_splash", "glow_flash", "particle_explosion",
-             "bomb_explosion", "fire", "splash")
+             "bomb_explosion", "fire", "splash", "clipped_shine")
 
 
 def _radial(size: int, color, power=2.0):
@@ -55,6 +55,17 @@ def _asset_images(required: set[str]):
         ImageDraw.Draw(drop).ellipse((6, 16, 30, 58), fill=(175, 235, 255, 235))
         ImageDraw.Draw(drop).polygon([(18, 2), (8, 28), (28, 28)], fill=(205, 248, 255, 235))
         images["__fx_drop"] = drop.filter(ImageFilter.GaussianBlur(.8))
+    if "clipped_shine" in required:
+        w, h = 120, 280
+        shine = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        pixels = shine.load()
+        for y in range(h):
+            along = math.sin(math.pi * (y + .5) / h) ** .9
+            for x in range(w):
+                u = (x - w / 2) / 9
+                alpha = min(1, math.exp(-(u ** 2)) + .35 * math.exp(-((x - w / 2) / 24) ** 2))
+                pixels[x, y] = (255, 255, 255, round(255 * alpha * along))
+        images["__fx_shine"] = shine
     return images
 
 
@@ -72,7 +83,8 @@ def generate_assets(images_dir: str, presets: list[str], width: float, height: f
 
 
 def install(presets: list[str], bones: list[dict], slots: list[dict], attachments: dict,
-            animations: dict, norm: dict, width: float, height: float) -> dict:
+            animations: dict, norm: dict, width: float, height: float,
+            images_dir: str = "") -> dict:
     """Install independent FX animations that can be mixed on separate tracks."""
     requested = [value.strip().lower() for value in presets]
     if not requested:
@@ -86,7 +98,8 @@ def install(presets: list[str], bones: list[dict], slots: list[dict], attachment
 
     def sprite(slot_name, bone_name, region, *, blend="additive", scale=1.0):
         bone(bone_name)
-        slots.append({"name": slot_name, "bone": bone_name, "attachment": slot_name, "blend": blend})
+        slots.append({"name": slot_name, "bone": bone_name, "attachment": slot_name,
+                      "blend": blend, "color": "ffffff00"})
         source = norm[region]
         attachments[slot_name] = {slot_name: {
             "path": region, "width": round(source["w"]), "height": round(source["h"]),
@@ -109,6 +122,38 @@ def install(presets: list[str], bones: list[dict], slots: list[dict], attachment
     if "splash" in structures:
         for index in range(12):
             sprite(f"__fx_drop_{index}", f"__fx_drop_bone_{index}", "__fx_drop", blend="normal", scale=.7)
+    shine_target = None
+    if "clipped_shine" in structures:
+        candidates = [(name, value) for name, value in norm.items() if not name.startswith("__fx_")]
+        preferred = [(name, value) for name, value in candidates
+                     if any(word in name.casefold() for word in ("title", "logo", "symbol", "letter"))]
+        shine_target, target = max(preferred or candidates, key=lambda item: item[1]["w"] * item[1]["h"])
+        shine_bone = "__fx_shine_bone"
+        bone(shine_bone, target["cx"], target["cy"])
+        clip_vertices = [target["cx"] - target["w"] / 2, target["cy"] - target["h"] / 2,
+                         target["cx"] + target["w"] / 2, target["cy"] - target["h"] / 2,
+                         target["cx"] + target["w"] / 2, target["cy"] + target["h"] / 2,
+                         target["cx"] - target["w"] / 2, target["cy"] + target["h"] / 2]
+        if images_dir:
+            try:
+                import numpy as np
+                from skimage.measure import approximate_polygon, find_contours
+                alpha = np.array(Image.open(os.path.join(images_dir, target["file"] + ".png")).convert("RGBA"))[..., 3]
+                contours = find_contours(alpha > 40, .5)
+                contour = max(contours, key=len)
+                contour = approximate_polygon(contour, tolerance=max(1.2, len(contour) / 400))
+                if len(contour) > 96:
+                    contour = contour[::math.ceil(len(contour) / 96)]
+                left, top = target["cx"] - target["w"] / 2, target["cy"] + target["h"] / 2
+                clip_vertices = [round(value, 2) for row, col in contour[::-1]
+                                 for value in (left + col, top - row)]
+            except Exception as exc:
+                warnings.append(f"clipped_shine used rectangular fallback: {exc}")
+        slots.append({"name": "__fx_shine_clip", "bone": "root", "attachment": "__fx_shine_clip"})
+        attachments["__fx_shine_clip"] = {"__fx_shine_clip": {
+            "type": "clipping", "end": "__fx_shine_slot",
+            "vertexCount": len(clip_vertices) // 2, "vertices": clip_vertices}}
+        sprite("__fx_shine_slot", shine_bone, "__fx_shine")
 
     coin_regions = [name for name in norm if "coin" in name.casefold() and not name.startswith("__fx")]
     if "coin_splash" in structures:
@@ -188,6 +233,13 @@ def install(presets: list[str], bones: list[dict], slots: list[dict], attachment
                 motion.slot_alpha(f"__fx_flame_{index}", [(0, 0), (delay, 0),
                                                             (delay + .1, .9), (.9, .65), (1.2, 0)])
             animations["fx_fire"] = motion.data
+        elif preset == "clipped_shine" and shine_target:
+            target = norm[shine_target]
+            animations["fx_clipped_shine"] = (Motion()
+                .bone("__fx_shine_bone", "translate", [
+                    (0, -target["w"] * .72, 0), (.12, -target["w"] * .72, 0, "inout"),
+                    (.82, target["w"] * .72, 0)])
+                .slot_alpha("__fx_shine_slot", [(0, 0), (.12, 0, "out"), (.22, .95, "sine"),
+                                                  (.7, .95, "in"), (.82, 0)]).data)
     return {"presets": requested, "warnings": warnings,
             "animations": [name for name in animations if name.startswith("fx_")]}
-

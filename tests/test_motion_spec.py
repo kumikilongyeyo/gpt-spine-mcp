@@ -32,3 +32,5 @@ def test_numeric_spec_compiles_curves_and_checks_handoff(tmp_path):
     first = data["animations"]["activated_in"]["bones"]["hero"]["scale"][0]
     assert len(first["curve"]) == 8
     assert "alpha" in data["animations"]["activated_in"]["slots"]["flash"]
+    alpha = data["animations"]["activated_in"]["slots"]["flash"]["alpha"]
+    assert all(abs(key["value"] * 255 - round(key["value"] * 255)) < 1e-5 for key in alpha)

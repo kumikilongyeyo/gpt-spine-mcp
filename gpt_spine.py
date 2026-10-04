@@ -33,7 +33,7 @@ def build_parser() -> argparse.ArgumentParser:
     rig.add_argument("--clipping", action="store_true", help="add a full-bounds clipping attachment")
     rig.add_argument("--slot-presets", default=None, help="comma-separated pulse,flash,flicker tracks")
     rig.add_argument("--fx-presets", default=None,
-                     help="comma-separated coin_splash,glow_flash,particle_explosion,bomb_explosion,fire,splash")
+                     help="comma-separated coin_splash,glow_flash,particle_explosion,bomb_explosion,fire,splash,clipped_shine")
     rig.add_argument("--source-group", help="nested PSD group containing the intended asset set")
     rig.add_argument("--no-editable", action="store_true", help="do not import an editable .spine project")
     rig.add_argument("--no-preview", action="store_true", help="skip preview montage")

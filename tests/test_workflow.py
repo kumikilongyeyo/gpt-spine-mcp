@@ -79,18 +79,21 @@ def test_fx_packs_emit_source_coins_curves_and_portable_images(tmp_path: Path):
     source = make_export(tmp_path)
     out = tmp_path / "fx"
     presets = ["coin_splash", "glow_flash", "particle_explosion",
-               "bomb_explosion", "fire", "splash"]
+               "bomb_explosion", "fire", "splash", "clipped_shine"]
     result = run_pipeline(str(source), str(out), "fxhero", animations=["idle"],
                           fx_presets=presets, make_editable=False, make_preview=False)
     data = json.loads((out / "fxhero.json").read_text())
     assert set(result["fx"]["presets"]) == set(presets)
     assert {"fx_coin_splash", "fx_glow_flash", "fx_particle_explosion",
             "fx_bomb_explosion", "fx_fire", "fx_splash"}.issubset(data["animations"])
+    assert "fx_clipped_shine" in data["animations"]
     assert data["skins"][0]["attachments"]["__fx_coin_0"]["__fx_coin_0"]["path"] == "coin"
     spark = data["animations"]["fx_particle_explosion"]["bones"]["__fx_spark_bone_0"]
     assert any("curve" in key for key in spark["translate"])
     assert (out / "images" / "body.png").is_file()
     assert (out / "images" / "__fx_flash.png").is_file()
+    assert all(slot.get("color", "").endswith("00") for slot in data["slots"]
+               if slot["name"].startswith("__fx_") and slot["name"] != "__fx_shine_clip")
 
 
 def test_windows_spine_cli_candidates_prefer_console_executable():

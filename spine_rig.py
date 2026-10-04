@@ -425,7 +425,7 @@ def build_rig(source: str, out_dir: str, name: str | None = None,
             "translate": [{"time": 0, "x": 0, "y": 10}, {"time": 0.16, "x": 0, "y": -3}, {"time": Pd, "x": 0, "y": 0}]}}}
 
     fx_result = spine_fx.install(fx_presets or [], bones, slots, attachments,
-                                 animations, norm, W, H)
+                                 animations, norm, W, H, images_dir)
 
     # Names outside the built-in set are still useful workflow states.  Generate
     # deterministic, editable starter motion instead of silently dropping them.
