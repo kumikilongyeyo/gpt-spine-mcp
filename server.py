@@ -11,6 +11,7 @@ from mcp.server.fastmcp import FastMCP
 
 import spine_brain
 import spine_cli
+import spine_engineering_loop
 import spine_motion_intelligence
 import spine_preview
 import spine_quality
@@ -40,10 +41,14 @@ def spine_doctor() -> dict:
         "deps": deps,
         "smart_animation_director": True,
         "animation_intelligence": 4,
+        "engineering_loop": 7,
+        "real_bezier_curves": True,
+        "frame_grid_authoring": 30,
         "psd_semantic_intelligence": 3,
         "visual_anatomy": True,
         "pose_beat_planning": True,
         "animation_quality_audit": True,
+        "render_diagnose_revise": True,
         "smart_rig_profiles": ["biped", "quadruped", "winged", "prop", "*_2_5d"],
         "secondary_systems": ["hair", "cloth", "tail", "wing"],
     }
@@ -205,6 +210,15 @@ def build_workflow(source: str, out_dir: str, name: str = "",
 def audit_preview(preview_gif: str, reference_gif: str = "") -> dict:
     """Reject blank/static previews and compare against an optional reference."""
     return spine_quality.audit_preview(preview_gif, reference_gif or None)
+
+
+@mcp.tool()
+def engineering_review(runtime_json: str, images_dir: str, out_dir: str,
+                       motion_plan: dict | None = None) -> dict:
+    """Render representative beats, diagnose motion defects, and return revision actions."""
+    return spine_engineering_loop.inspect_build(
+        runtime_json, images_dir, out_dir, motion_plan=motion_plan,
+    )
 
 
 @mcp.tool()
