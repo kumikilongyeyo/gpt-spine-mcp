@@ -1,13 +1,14 @@
-"""Animation Intelligence V4: pose beats, style, energy hierarchy, polish and QA.
+"""Animation Intelligence V4 + V7 taste-aware choreography planning.
 
-This layer does not try to replace an animator with opaque magic. It converts loose style
-intent into explicit timing, pose, overlap, contact, asymmetry and FX decisions that are
-editable in Spine and auditable after generation.
+The V4 planner still owns pose beats, style, energy hierarchy, asymmetry and overlap.
+V7 adds a conservative taste pass that replaces generic FX timing with purpose-driven,
+mechanic-aware choreography while keeping the runtime format editable and auditable.
 """
 from __future__ import annotations
 
-import math
 from typing import Iterable
+
+import spine_taste
 
 
 STYLE_PRESETS = {
@@ -78,7 +79,8 @@ def _beats_for(clip: str, style: dict, archetype: str) -> list[dict]:
         overshoot = contact + .12 + .05 * weight
         settle = overshoot + .22 + .22 * weight
         if archetype == "brute":
-            anticipation += .08; settle += .16
+            anticipation += .08
+            settle += .16
         return [
             {"name": "setup", "time": 0.0, "energy": .12},
             {"name": "anticipation", "time": round(anticipation, 3), "energy": round(.52 + .18 * exaggeration, 2)},
@@ -98,41 +100,22 @@ def _beats_for(clip: str, style: dict, archetype: str) -> list[dict]:
             {"name": "settle", "time": round(settle, 3), "energy": .0},
         ]
     if clip == "hit":
-        return [
-            {"name": "setup", "time": 0.0, "energy": .1},
-            {"name": "impact", "time": .06, "energy": 1.0},
-            {"name": "recoil", "time": round(.20 + .08 * weight, 3), "energy": .72},
-            {"name": "settle", "time": round(.48 + .18 * weight, 3), "energy": .0},
-        ]
+        return [{"name": "setup", "time": 0.0, "energy": .1}, {"name": "impact", "time": .06, "energy": 1.0},
+                {"name": "recoil", "time": round(.20 + .08 * weight, 3), "energy": .72},
+                {"name": "settle", "time": round(.48 + .18 * weight, 3), "energy": .0}]
     if clip == "land":
-        return [
-            {"name": "contact", "time": 0.0, "energy": .9},
-            {"name": "compression", "time": .10, "energy": 1.0},
-            {"name": "rebound", "time": .25, "energy": .55},
-            {"name": "settle", "time": round(.48 + .12 * weight, 3), "energy": .0},
-        ]
+        return [{"name": "contact", "time": 0.0, "energy": .9}, {"name": "compression", "time": .10, "energy": 1.0},
+                {"name": "rebound", "time": .25, "energy": .55}, {"name": "settle", "time": round(.48 + .12 * weight, 3), "energy": .0}]
     if clip == "jump":
-        return [
-            {"name": "anticipation", "time": 0.0, "energy": .45},
-            {"name": "launch", "time": .16, "energy": 1.0},
-            {"name": "apex", "time": .40, "energy": .2},
-            {"name": "fall", "time": .62, "energy": .55},
-        ]
+        return [{"name": "anticipation", "time": 0.0, "energy": .45}, {"name": "launch", "time": .16, "energy": 1.0},
+                {"name": "apex", "time": .40, "energy": .2}, {"name": "fall", "time": .62, "energy": .55}]
     if clip in {"walk", "run"}:
         duration = .82 if clip == "walk" else .52
-        return [
-            {"name": "contact_l", "time": 0.0, "energy": .55},
-            {"name": "passing_l", "time": round(duration * .25, 3), "energy": .35},
-            {"name": "contact_r", "time": round(duration * .5, 3), "energy": .55},
-            {"name": "passing_r", "time": round(duration * .75, 3), "energy": .35},
-            {"name": "loop", "time": duration, "energy": .55},
-        ]
+        return [{"name": "contact_l", "time": 0.0, "energy": .55}, {"name": "passing_l", "time": round(duration * .25, 3), "energy": .35},
+                {"name": "contact_r", "time": round(duration * .5, 3), "energy": .55}, {"name": "passing_r", "time": round(duration * .75, 3), "energy": .35},
+                {"name": "loop", "time": duration, "energy": .55}]
     if clip == "idle":
-        return [
-            {"name": "rest", "time": 0.0, "energy": .08},
-            {"name": "inhale", "time": 1.05, "energy": .20},
-            {"name": "exhale", "time": 2.25, "energy": .08},
-        ]
+        return [{"name": "rest", "time": 0.0, "energy": .08}, {"name": "inhale", "time": 1.05, "energy": .20}, {"name": "exhale", "time": 2.25, "energy": .08}]
     return [{"name": "setup", "time": 0.0, "energy": .1}, {"name": "settle", "time": .6, "energy": 0.0}]
 
 
@@ -150,31 +133,15 @@ def _energy_hierarchy(clip: str, asset_type: str, archetype: str) -> dict:
     return {"primary": ["torso", "pelvis"], "support": ["head", "limbs"], "tertiary": ["hair", "cloth", "tail", "fx"]}
 
 
-def _fx_beats(clip: str, beats: list[dict], style: dict) -> list[dict]:
-    by_name = {beat["name"]: beat for beat in beats}
-    output = []
-    impact = by_name.get("contact") or by_name.get("impact") or by_name.get("peak")
-    anticipation = by_name.get("anticipation")
-    settle = by_name.get("settle")
-    if style["fx"] < .3:
-        return output
-    if anticipation and clip in {"attack", "win", "mega_win", "celebration"}:
-        output.append({"time": anticipation["time"], "cue": "glow_build", "intensity": round(style["fx"] * .55, 2)})
-    if impact:
-        output.append({"time": impact["time"], "cue": "impact_flash", "intensity": round(style["fx"], 2)})
-        if style["fx"] >= .55:
-            output.append({"time": round(impact["time"] + .035, 3), "cue": "particles", "intensity": round(style["fx"] * .82, 2)})
-    if settle and style["fx"] >= .65 and clip in {"win", "mega_win", "celebration"}:
-        output.append({"time": round(max(0, settle["time"] - .20), 3), "cue": "shine_sweep", "intensity": round(style["fx"] * .68, 2)})
-    return output
-
-
 def build_motion_plan(request: str, asset_type: str, animations: Iterable[str], semantic_scene: dict | None = None) -> dict:
     style = infer_style(request)
     archetype = character_archetype(asset_type, request, semantic_scene)
     clips = {}
+    taste_scores = []
     for clip in animations:
         beats = _beats_for(clip, style, archetype)
+        choreography = spine_taste.choreograph_clip(request, clip, beats, style, asset_type, semantic_scene)
+        taste_scores.append(choreography["audit"]["score"])
         clips[clip] = {
             "beats": beats,
             "energy_hierarchy": _energy_hierarchy(clip, asset_type, archetype),
@@ -182,13 +149,18 @@ def build_motion_plan(request: str, asset_type: str, animations: Iterable[str], 
             "overlap": style["overlap"],
             "weight": style["weight"],
             "snappiness": style["snappiness"],
-            "fx_beats": _fx_beats(clip, beats, style),
+            "fx_beats": choreography["fx_cues"],
             "contacts": [beat for beat in beats if beat["name"].startswith("contact")],
+            "taste_choreography": choreography,
         }
+    taste_score = round(sum(taste_scores) / max(1, len(taste_scores)), 1)
     return {
-        "version": 4,
+        "version": 7,
+        "motion_core_version": 4,
         "style": style,
         "archetype": archetype,
+        "taste_profile": spine_taste.DEFAULT_PROFILE["name"],
+        "taste_score": taste_score,
         "clips": clips,
         "rules": [
             "primary motion leads support motion; tertiary pieces react afterward",
@@ -196,7 +168,7 @@ def build_motion_plan(request: str, asset_type: str, animations: Iterable[str], 
             "bilateral motion gets small timing/value offsets unless symmetry is part of the design",
             "feet/paws should hold contact during planted phases",
             "secondary motion responds to acceleration and stop events instead of idling independently",
-            "FX cues are synchronized to anticipation, impact and settle rather than playing continuously",
+            *spine_taste.DEFAULT_PROFILE["principles"],
         ],
     }
 
@@ -206,10 +178,11 @@ def _track_times(track: list[dict]) -> list[float]:
 
 
 def audit_animation(data: dict, motion_plan: dict | None = None) -> dict:
-    """Structural animation-quality audit. It cannot judge drawing appeal, but catches common procedural ugliness."""
+    """Structural quality audit plus planned taste/choreography checks."""
     animations = data.get("animations", {})
     clips_report = {}
     scores = []
+    taste_scores = []
     for clip, animation in animations.items():
         bone_tracks = animation.get("bones", {}) if isinstance(animation, dict) else {}
         timeline_count = 0
@@ -218,7 +191,7 @@ def audit_animation(data: dict, motion_plan: dict | None = None) -> dict:
         bilateral = {"l": set(), "r": set()}
         for bone, channels in bone_tracks.items():
             side = "l" if bone.endswith("_l") or "_l_" in bone else "r" if bone.endswith("_r") or "_r_" in bone else ""
-            for channel, track in channels.items():
+            for track in channels.values():
                 if not isinstance(track, list):
                     continue
                 timeline_count += 1
@@ -246,15 +219,24 @@ def audit_animation(data: dict, motion_plan: dict | None = None) -> dict:
         if clip in {"attack", "hit", "land", "win", "mega_win", "celebration"} and len(distinct_times) < 4:
             issues.append("one-shot lacks anticipation/impact/settle contrast")
             score -= 12
+        taste = planned.get("taste_choreography", {}).get("audit")
+        if taste:
+            taste_scores.append(float(taste.get("score", 0)))
+            if taste.get("score", 0) < 82:
+                issues.extend(taste.get("issues", []))
         score = max(0, score)
         scores.append(score)
         clips_report[clip] = {"score": score, "issues": issues, "timelines": timeline_count,
-                              "keys": key_count, "distinct_times": sorted(distinct_times)}
-    overall = round(sum(scores) / max(1, len(scores)), 1)
+                              "keys": key_count, "distinct_times": sorted(distinct_times), "taste": taste or {}}
+    structural = round(sum(scores) / max(1, len(scores)), 1)
+    taste = round(sum(taste_scores) / max(1, len(taste_scores)), 1) if taste_scores else None
+    overall = round((structural * .65 + taste * .35), 1) if taste is not None else structural
     return {
-        "version": 4,
+        "version": 7,
+        "structural_score": structural,
+        "taste_score": taste,
         "score": overall,
         "grade": "excellent" if overall >= 90 else "good" if overall >= 80 else "needs_polish" if overall >= 65 else "weak",
         "clips": clips_report,
-        "note": "Structural audit only; final silhouette appeal still benefits from rendered preview review.",
+        "note": "Structural/taste audit only; true visual polish still requires playback review, preferably from Spine itself.",
     }
