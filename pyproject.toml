@@ -1,6 +1,6 @@
 [project]
 name = "gpt-spine-mcp"
-version = "0.5.1"
+version = "0.6.0"
 description = "OpenAI/Codex MCP workflow for production Spine 2D rigs and animation"
 readme = "README.md"
 requires-python = ">=3.10"

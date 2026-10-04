@@ -53,7 +53,7 @@ For an immutable release, replace the URL below with the published fork and pin
 the tag:
 
 ```bash
-uv tool install "gpt-spine-mcp[agents] @ git+https://github.com/kumikilongyeyo/gpt-spine-mcp@v0.5.1"
+uv tool install "gpt-spine-mcp[agents] @ git+https://github.com/kumikilongyeyo/gpt-spine-mcp@v0.6.0"
 codex mcp add gpt-spine -- gpt-spine-mcp
 ```
 
@@ -61,6 +61,7 @@ codex mcp add gpt-spine -- gpt-spine-mcp
 
 ```bash
 gpt-spine rig mega_win.psd \
+  --source-group "mega win" \
   --clean-mesh \
   --auto-weight \
   --ik \
@@ -80,6 +81,9 @@ gpt-spine rig character.psd --no-editable --no-export
 
 # Check which Spine executable was auto-detected.
 gpt-spine doctor
+
+# Reject a blank/static preview and compare it with an art-direction reference.
+gpt-spine audit-preview build/mega_win.gif --reference art-direction.gif
 ```
 
 `SPINE_BIN` has priority when set. Otherwise macOS detection checks the normal
@@ -113,6 +117,7 @@ licensed projects or production assets.
 - `export_project` — `.spine` to runtime output
 - `project_info` — licensed CLI project inspection
 - `preview` — fast keyframe montage
+- `audit_preview` — objective blank/static/duration/motion/occupancy delivery gate
 - `batch` — process a roster of PhotoshopToSpine exports
 
 ## Rig and animation behavior
@@ -136,7 +141,10 @@ reviewed on hero assets.
 ## Input conventions
 
 A PhotoshopToSpine directory needs a layout JSON containing `skins` and an
-`images/` directory. A PSD uses each visible top-level layer as a part. The
+`images/` directory. PSD import walks visible nested leaf layers, assigns unique
+attachment names, and reports semantic role guesses. Use `--source-group` when
+the intended asset set is inside a named folder; this prevents unrelated PSD
+concepts from being flattened into the rig. The
 default head classifier recognizes `head,face,golova,crown,tooth`; override it:
 
 ```bash
@@ -166,6 +174,7 @@ preview output. Tests do not require a Spine licence or OpenAI API key.
 | `v0.4.0` | multi-state animation generation |
 | `v0.5.0` | slot FX, clipping, validation, OpenAI/Codex client |
 | `v0.5.1` | macOS/Windows/Linux installers and cross-platform CI |
+| `v0.6.0` | nested PSD groups, semantic inspection, reference preview QA, portable image checks |
 | `v1.0.0` | planned stable workflow after real-asset compatibility testing |
 
 Never move a published tag. Patch a release and add a new tag so a known-good

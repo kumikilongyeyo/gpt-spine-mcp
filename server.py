@@ -27,6 +27,7 @@ from mcp.server.fastmcp import FastMCP
 import spine_rig
 import spine_cli
 import spine_preview
+import spine_quality
 import workflow
 from spine_validate import validate_rig
 
@@ -48,13 +49,13 @@ def spine_doctor() -> dict:
 
 
 @mcp.tool()
-def inspect_source(source: str) -> dict:
+def inspect_source(source: str, source_group: str = "") -> dict:
     """List the parts and detected head-state families of a .psd or a
     PhotoshopToSpine export folder, WITHOUT building anything. Use this first to
     confirm what will be rigged."""
     if source.lower().endswith(".psd"):
         import tempfile
-        parts, draw, _ = spine_rig._read_psd(source, tempfile.mkdtemp())
+        return spine_rig.inspect_psd(source, tempfile.mkdtemp(), source_group or None)
     else:
         parts, draw, _ = spine_rig._read_photoshop_export(source)
     fam = {}
@@ -73,7 +74,8 @@ def rig_and_animate(source: str, out_dir: str, name: str = "", kind: str = "symb
                     anims: list[str] | None = None, make_editable: bool = True,
                     clean_mesh: bool = False, auto_weight: bool = False,
                     ik: bool = False, clipping: bool = False,
-                    slot_presets: list[str] | None = None) -> dict:
+                    slot_presets: list[str] | None = None,
+                    source_group: str = "") -> dict:
     """Build a rigged + animated Spine skeleton from a cut-up character.
 
     source        path to a .psd OR a PhotoshopToSpine export folder
@@ -87,11 +89,14 @@ def rig_and_animate(source: str, out_dir: str, name: str = "", kind: str = "symb
     Returns a summary incl. file paths and an editable-project path."""
     res = spine_rig.build_rig(source, out_dir, name or None, kind, anims,
                               clean_mesh=clean_mesh, auto_weight=auto_weight,
-                              ik=ik, clipping=clipping, slot_presets=slot_presets)
+                              ik=ik, clipping=clipping, slot_presets=slot_presets,
+                              source_group=source_group or None)
     if make_editable and spine_cli.available():
-        src_dir = source if os.path.isdir(source) else os.path.dirname(source)
-        proj = os.path.join(src_dir, f"{res['name']}.spine")
+        proj = os.path.join(out_dir, f"{res['name']}.spine")
         res["editable_project"] = spine_cli.make_project(res["files"]["json"], proj)
+        res["asset_portability"] = spine_quality.audit_project_assets(res["files"]["json"], proj)
+        if not res["asset_portability"]["ok"]:
+            raise ValueError("editable project is not portable")
     return res
 
 
@@ -101,6 +106,7 @@ def build_workflow(source: str, out_dir: str, name: str = "",
                    clean_mesh: bool = False, auto_weight: bool = False,
                    ik: bool = False, clipping: bool = False,
                    slot_presets: list[str] | None = None,
+                   source_group: str = "",
                    make_editable: bool = True, make_preview: bool = True) -> dict:
     """Run the complete production workflow: rig, animate, mesh/weight, add
     optional IK and clipping, save/export when Spine is installed, render a
@@ -109,8 +115,16 @@ def build_workflow(source: str, out_dir: str, name: str = "",
         source, out_dir, name or None, rig_only=rig_only, animations=animations,
         clean_mesh=clean_mesh, auto_weight=auto_weight, ik=ik, clipping=clipping,
         slot_presets=slot_presets, make_editable=make_editable,
+        source_group=source_group or None,
         make_preview=make_preview,
     )
+
+
+@mcp.tool()
+def audit_preview(preview_gif: str, reference_gif: str = "") -> dict:
+    """Reject blank/static previews and compare duration, motion, and occupancy
+    against an optional art-direction reference before a delivery is accepted."""
+    return spine_quality.audit_preview(preview_gif, reference_gif or None)
 
 
 @mcp.tool()

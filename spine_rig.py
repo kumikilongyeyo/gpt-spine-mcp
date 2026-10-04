@@ -20,7 +20,7 @@ This is the engine behind the Spine MCP server's `rig_and_animate` tool; it is a
 pure function (no MCP, no globals) so it can also be imported or run standalone.
 """
 from __future__ import annotations
-import json, os, glob
+import json, os, glob, re, shutil
 from PIL import Image
 
 SUFFIX = ("_win", "_blink")
@@ -52,20 +52,94 @@ def _read_photoshop_export(export_dir: str):
     return parts, draw, images_dir
 
 
-def _read_psd(psd_path: str, work_dir: str):
-    """Flatten each top-level PSD layer to a PNG and record its centre/size.
-    Mirrors what PhotoshopToSpine does, so the rest of the pipeline is identical."""
+def _walk_psd_layers(parent, prefix=""):
+    """Yield visible leaf layers as ``(path, layer)`` in PSD draw order."""
+    for layer in parent:
+        path = f"{prefix}/{layer.name.strip()}" if prefix else layer.name.strip()
+        if not layer.is_visible():
+            continue
+        if layer.is_group():
+            yield from _walk_psd_layers(layer, path)
+        else:
+            yield path, layer
+
+
+def _find_psd_group(psd, requested: str):
+    wanted = requested.strip().casefold().strip("/")
+    matches = []
+
+    def visit(parent, prefix=""):
+        for layer in parent:
+            path = f"{prefix}/{layer.name.strip()}" if prefix else layer.name.strip()
+            if layer.is_group():
+                if layer.name.strip().casefold() == wanted or path.casefold() == wanted:
+                    matches.append((path, layer))
+                visit(layer, path)
+
+    visit(psd)
+    if not matches:
+        raise ValueError(f"PSD group {requested!r} was not found")
+    if len(matches) > 1:
+        paths = ", ".join(path for path, _ in matches)
+        raise ValueError(f"PSD group {requested!r} is ambiguous; use one of: {paths}")
+    return matches[0]
+
+
+def _safe_part_name(path: str, used: set[str]) -> str:
+    base = re.sub(r"[^A-Za-z0-9_.-]+", "_", path.strip()).strip("_.") or "part"
+    candidate, index = base, 2
+    while candidate.casefold() in used:
+        candidate = f"{base}_{index}"
+        index += 1
+    used.add(candidate.casefold())
+    return candidate
+
+
+def _semantic_role(path: str) -> str:
+    value = path.casefold().replace("-", "_").replace(" ", "_")
+    rules = (
+        ("face", ("face", "eye", "mouth", "smile", "brow")),
+        ("hand_money", ("money_hand", "hand_money", "cash_hand", "arm_money")),
+        ("hand_steering", ("steering_hand", "hand_steering", "wheel_hand")),
+        ("steering_wheel", ("steering", "wheel")),
+        ("coin_fx", ("coin", "gold")),
+        ("shine_fx", ("shine", "sweep", "windshield")),
+        ("glow_fx", ("glow", "burst", "ray", "spark", "flash")),
+        ("title", ("mega_win", "title", "headline")),
+        ("number_display", ("number", "digits", "counter", "amount")),
+        ("vehicle", ("jeep", "vehicle", "car", "truck")),
+        ("driver", ("driver", "body", "torso", "head")),
+    )
+    for role, words in rules:
+        if any(word in value for word in words):
+            return role
+    return "unclassified"
+
+
+def _read_psd(psd_path: str, work_dir: str, source_group: str | None = None):
+    """Flatten visible leaf layers from a PSD (or selected nested group).
+
+    Layer paths become unique, filesystem-safe attachment names. This avoids the
+    old failure mode where a top-level folder was flattened into one giant image
+    and duplicate nested layer names silently overwrote each other.
+    """
     from psd_tools import PSDImage
     psd = PSDImage.open(psd_path)
     images_dir = os.path.join(work_dir, "images")
     os.makedirs(images_dir, exist_ok=True)
     Wc, Hc = psd.width, psd.height
-    parts, draw = {}, []
-    for layer in psd:                                             # bottom→top order
-        if not layer.is_visible() or layer.bbox == (0, 0, 0, 0):
+    parts, draw, used = {}, [], set()
+    parent, prefix = psd, ""
+    if source_group:
+        prefix, parent = _find_psd_group(psd, source_group)
+    for path, layer in _walk_psd_layers(parent, prefix):
+        if layer.bbox == (0, 0, 0, 0):
             continue
-        name = layer.name.strip()
-        img = layer.composite()
+        name = _safe_part_name(path, used)
+        try:
+            img = layer.composite()
+        except (ImportError, ModuleNotFoundError):
+            img = layer.topil()
         if img is None:
             continue
         img.save(os.path.join(images_dir, f"{name}.png"))
@@ -73,9 +147,43 @@ def _read_psd(psd_path: str, work_dir: str):
         w, h = r - l, b - t
         cx = (l + r) / 2 - Wc / 2                                 # centre, origin mid-top
         cy = Hc - (t + b) / 2                                     # +Y up from bottom
-        parts[name] = dict(x=cx, y=cy, w=float(w), h=float(h), file=name)
+        parts[name] = dict(x=cx, y=cy, w=float(w), h=float(h), file=name,
+                           layer_path=path, role=_semantic_role(path))
         draw.append(name)
     return parts, draw, images_dir
+
+
+def inspect_psd(psd_path: str, work_dir: str, source_group: str | None = None) -> dict:
+    """Return a semantic build plan without hiding nested PSD structure."""
+    from psd_tools import PSDImage
+    psd = PSDImage.open(psd_path)
+    groups = []
+
+    def visit(parent, prefix=""):
+        for layer in parent:
+            path = f"{prefix}/{layer.name.strip()}" if prefix else layer.name.strip()
+            if layer.is_group():
+                groups.append(path)
+                visit(layer, path)
+
+    visit(psd)
+    parts, draw, _ = _read_psd(psd_path, work_dir, source_group)
+    role_map: dict[str, list[str]] = {}
+    layers = []
+    for name in draw:
+        part = parts[name]
+        role_map.setdefault(part["role"], []).append(name)
+        layers.append({"attachment": name, "layer_path": part["layer_path"],
+                       "role": part["role"], "bounds": [part["x"], part["y"],
+                                                          part["w"], part["h"]]})
+    warnings = []
+    if not source_group and groups:
+        warnings.append("PSD contains groups; select source_group when only one folder is the asset set")
+    if role_map.get("unclassified"):
+        warnings.append(f"{len(role_map['unclassified'])} layers need explicit art-direction roles")
+    return {"canvas": [psd.width, psd.height], "source_group": source_group,
+            "groups": groups, "layers": layers, "roles": role_map,
+            "count": len(layers), "warnings": warnings}
 
 
 # ------------------------------------------------------------------- rig engine
@@ -110,7 +218,8 @@ def build_rig(source: str, out_dir: str, name: str | None = None,
               kind: str = "symbol", anims: list[str] | None = None,
               *, clean_mesh: bool = False, auto_weight: bool = False,
               ik: bool = False, clipping: bool = False,
-              slot_presets: list[str] | None = None) -> dict:
+              slot_presets: list[str] | None = None,
+              source_group: str | None = None) -> dict:
     """Build the skeleton. `source` is an export folder or a .psd. Returns a
     summary dict {name, width, height, bones, slots, head_slot, variants, anims,
     files}."""
@@ -119,7 +228,7 @@ def build_rig(source: str, out_dir: str, name: str | None = None,
     os.makedirs(out_dir, exist_ok=True)
 
     if source.lower().endswith(".psd"):
-        parts, draw, images_dir = _read_psd(source, out_dir)
+        parts, draw, images_dir = _read_psd(source, out_dir, source_group)
     else:
         parts, draw, images_dir = _read_photoshop_export(source)
     if not parts:
@@ -184,6 +293,16 @@ def build_rig(source: str, out_dir: str, name: str | None = None,
     all_regions = list(norm.keys())
     MAXW, PAD = 1024, 2
     imgs = {n: Image.open(f"{images_dir}/{norm[n]['file']}.png").convert("RGBA") for n in all_regions}
+    # Editable Spine projects reference loose images, not pixels embedded inside
+    # the .spine file. Always place those images beside the final project so a
+    # copied delivery does not retain a hidden dependency on the source folder.
+    portable_images = os.path.join(out_dir, "images")
+    os.makedirs(portable_images, exist_ok=True)
+    for n in all_regions:
+        source_image = os.path.abspath(f"{images_dir}/{norm[n]['file']}.png")
+        target_image = os.path.abspath(os.path.join(portable_images, f"{norm[n]['file']}.png"))
+        if source_image != target_image:
+            shutil.copy2(source_image, target_image)
     # A part WIDER than the page used to be pasted anyway: PIL crops silently at
     # the page edge while the .atlas still declares the full region size, so the
     # overhanging columns sample outside the texture and the renderer clamps them
@@ -419,7 +538,7 @@ def build_rig(source: str, out_dir: str, name: str | None = None,
 
     skel = {"skeleton": {"hash": f"gpt-spine-mcp-{name}", "spine": "4.2.00",
                          "x": round(-W / 2, 2), "y": 0, "width": round(W, 2), "height": round(H, 2),
-                         "images": "./", "audio": ""},
+                         "images": "./images/", "audio": ""},
             "bones": bones, "slots": slots, "skins": skins, "animations": animations}
     if constraints:
         skel["ik"] = constraints
@@ -431,5 +550,6 @@ def build_rig(source: str, out_dir: str, name: str | None = None,
         "head_slot": HEAD_SLOT, "variants": list(STATE_FAM.get(HEAD_SLOT, {})) if HEAD_SLOT else [],
         "anims": list(animations), "mesh": clean_mesh or auto_weight,
         "weighted": auto_weight, "ik": bool(constraints), "clipping": clipping,
+        "source_group": source_group,
         "files": {"json": f"{out_dir}/{name}.json", "atlas": f"{out_dir}/{name}.atlas", "png": f"{out_dir}/{name}.png"},
     }
