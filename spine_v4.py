@@ -11,8 +11,12 @@ import math
 import os
 
 import spine_anatomy
+import spine_motion
 import spine_motion_intelligence
 import spine_semantics
+
+
+_AUTHORING_FPS = 30
 
 
 def _attachments(skins) -> dict:
@@ -142,22 +146,41 @@ def _add_visual_anatomy(data: dict, scene: dict) -> list[dict]:
     return added
 
 
-def _set_rotate(animation: dict, bone: str | None, keys: list[tuple[float, float]]) -> None:
+def _snap_keys(keys: list[tuple], fps: int = _AUTHORING_FPS) -> list[tuple]:
+    """Author on an explicit frame grid and keep successive beats distinct."""
+    output = []
+    previous_frame = -1
+    for raw in keys:
+        frame = max(0, int(round(float(raw[0]) * fps)))
+        if output and frame <= previous_frame:
+            frame = previous_frame + 1
+        output.append((round(frame / fps, 4), *raw[1:]))
+        previous_frame = frame
+    return output
+
+
+def _eased_keys(keys: list[tuple], ease: str) -> list[tuple]:
+    snapped = _snap_keys(keys)
+    return [(*key, ease) if index + 1 < len(snapped) else key
+            for index, key in enumerate(snapped)]
+
+
+def _set_rotate(animation: dict, bone: str | None,
+                keys: list[tuple[float, float]], ease: str = "out") -> None:
     if not bone:
         return
     channel = animation.setdefault("bones", {}).setdefault(bone, {})
-    channel["rotate"] = [({"value": round(value, 3)} if time == 0 else
-                          {"time": round(time, 3), "value": round(value, 3), "curve": "bezier"})
-                         for time, value in keys]
+    # IMPORTANT: Spine does not understand curve="bezier" as an easing instruction.
+    # Use the real absolute control-point arrays produced by spine_motion.timeline.
+    channel["rotate"] = spine_motion.timeline("rotate", _eased_keys(keys, ease))
 
 
-def _set_translate(animation: dict, bone: str | None, keys: list[tuple[float, float, float]]) -> None:
+def _set_translate(animation: dict, bone: str | None,
+                   keys: list[tuple[float, float, float]], ease: str = "out") -> None:
     if not bone:
         return
     channel = animation.setdefault("bones", {}).setdefault(bone, {})
-    channel["translate"] = [({"x": round(x, 3), "y": round(y, 3)} if time == 0 else
-                             {"time": round(time, 3), "x": round(x, 3), "y": round(y, 3), "curve": "bezier"})
-                            for time, x, y in keys]
+    channel["translate"] = spine_motion.timeline("translate", _eased_keys(keys, ease))
 
 
 def _bone_for(role_bones: dict, role: str, side: str = "") -> str | None:
@@ -180,43 +203,43 @@ def _apply_one_shot(animation: dict, clip: str, spec: dict, role_bones: dict) ->
     if clip == "attack" and all(name in times for name in ("anticipation", "contact", "overshoot", "settle")):
         a, c, o, s = times["anticipation"], times["contact"], times["overshoot"], times["settle"]
         power = 18 + 12 * weight
-        _set_rotate(animation, torso, [(0, 0), (a, -power * .48), (c, power * .65), (o, power * .26), (s, 0)])
-        _set_rotate(animation, pelvis, [(0, 0), (a, power * .24), (c, -power * .34), (o, -power * .10), (s, 0)])
-        _set_rotate(animation, head, [(0, 0), (a + .02, power * .13), (c + .025, -power * .20), (s, 0)])
+        _set_rotate(animation, torso, [(0, 0), (a, -power * .48), (c, power * .65), (o, power * .26), (s, 0)], "expo")
+        _set_rotate(animation, pelvis, [(0, 0), (a, power * .24), (c, -power * .34), (o, -power * .10), (s, 0)], "out")
+        _set_rotate(animation, head, [(0, 0), (a + .02, power * .13), (c + .025, -power * .20), (s, 0)], "out")
         for side, sign in (("r", 1), ("l", -1)):
             delay = asym * (.05 if side == "l" else 0)
             upper = _bone_for(role_bones, "upper_arm", side)
             lower = _bone_for(role_bones, "lower_arm", side)
             amount = power * (1.55 if side == "r" else .62)
             _set_rotate(animation, upper, [(0, 0), (a + delay, -amount * sign), (c + delay, amount * 1.5 * sign),
-                                           (o + delay, amount * .38 * sign), (s, 0)])
+                                           (o + delay, amount * .38 * sign), (s, 0)], "expo")
             _set_rotate(animation, lower, [(0, 0), (a + delay + .015, -amount * .48 * sign),
-                                           (c + delay + .012, amount * .72 * sign), (s, 0)])
+                                           (c + delay + .012, amount * .72 * sign), (s, 0)], "out")
         touched += [name for name in (torso, pelvis, head) if name]
 
     elif clip in {"win", "mega_win", "celebration"} and all(name in times for name in ("anticipation", "peak", "settle")):
         a, p, s = times["anticipation"], times["peak"], times["settle"]
         power = 12 + 10 * float(spec.get("snappiness", .6))
-        _set_rotate(animation, torso, [(0, 0), (a, -power * .34), (p, power * .52), (p + .18, -power * .16), (s, 0)])
+        _set_rotate(animation, torso, [(0, 0), (a, -power * .34), (p, power * .52), (p + .18, -power * .16), (s, 0)], "outback")
         _set_translate(animation, pelvis, [(0, 0, 0), (a, 0, -3 - 4 * weight), (p, 0, 6 + 8 * (1 - weight)),
-                                           (p + .20, 0, 1), (s, 0, 0)])
+                                           (p + .20, 0, 1), (s, 0, 0)], "outback")
         for side, sign in (("l", -1), ("r", 1)):
             upper = _bone_for(role_bones, "upper_arm", side)
             offset = .018 if side == "l" else 0
             _set_rotate(animation, upper, [(0, 0), (a + offset, -18 * sign), (p + offset, 58 * sign),
-                                           (p + .20 + offset, 44 * sign), (s, 0)])
+                                           (p + .20 + offset, 44 * sign), (s, 0)], "outback")
         touched += [name for name in (torso, pelvis) if name]
 
     elif clip == "hit" and all(name in times for name in ("impact", "recoil", "settle")):
         i, r, s = times["impact"], times["recoil"], times["settle"]
-        _set_rotate(animation, torso, [(0, 0), (i, -20 - 10 * weight), (r, 9), (s, 0)])
-        _set_rotate(animation, head, [(0, 0), (i + .02, -14), (r + .03, 6), (s, 0)])
+        _set_rotate(animation, torso, [(0, 0), (i, -20 - 10 * weight), (r, 9), (s, 0)], "expo")
+        _set_rotate(animation, head, [(0, 0), (i + .02, -14), (r + .03, 6), (s, 0)], "out")
         touched += [name for name in (torso, head) if name]
 
     elif clip == "land" and all(name in times for name in ("contact", "compression", "rebound", "settle")):
         c, comp, r, s = times["contact"], times["compression"], times["rebound"], times["settle"]
-        _set_translate(animation, pelvis, [(c, 0, 0), (comp, 0, -8 - 10 * weight), (r, 0, 3), (s, 0, 0)])
-        _set_rotate(animation, torso, [(c, 0), (comp, 8 + 7 * weight), (r, -3), (s, 0)])
+        _set_translate(animation, pelvis, [(c, 0, 0), (comp, 0, -8 - 10 * weight), (r, 0, 3), (s, 0, 0)], "out")
+        _set_rotate(animation, torso, [(c, 0), (comp, 8 + 7 * weight), (r, -3), (s, 0)], "out")
         touched += [name for name in (pelvis, torso) if name]
     return touched
 
@@ -232,8 +255,8 @@ def _apply_locomotion(animation: dict, clip: str, spec: dict, role_bones: dict) 
     torso = _bone_for(role_bones, "torso")
     rise = 3.0 if clip == "walk" else 5.5
     _set_translate(animation, pelvis, [(t[0], 0, 0), (t[1], 0, rise), (t[2], 0, 0),
-                                       (t[3], 0, rise), (t[4], 0, 0)])
-    _set_rotate(animation, torso, [(t[0], -2.2), (t[1], 1.5), (t[2], 2.2), (t[3], -1.5), (t[4], -2.2)])
+                                       (t[3], 0, rise), (t[4], 0, 0)], "sine")
+    _set_rotate(animation, torso, [(t[0], -2.2), (t[1], 1.5), (t[2], 2.2), (t[3], -1.5), (t[4], -2.2)], "sine")
     return [name for name in (pelvis, torso) if name]
 
 
@@ -261,7 +284,7 @@ def _apply_secondary_causality(animation: dict, clip: str, spec: dict,
                 (action_time + .08 + delay, amp),
                 (min(settle, action_time + .24 + delay), -amp * .32),
                 (settle, 0),
-            ])
+            ], "out")
             count += 1
     return count
 
@@ -323,6 +346,8 @@ def apply(runtime_json: str, *, images_dir: str = "", naming_profile: str = "",
     return {
         "ok": True,
         "version": 4,
+        "authoring_fps": _AUTHORING_FPS,
+        "real_bezier_curves": True,
         "visual_anatomy": scene,
         "visual_bones_added": visual_bones,
         "motion_plan": motion_plan or {},
