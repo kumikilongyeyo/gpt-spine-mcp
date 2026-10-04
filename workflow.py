@@ -8,6 +8,7 @@ import spine_preview
 import spine_rig
 import spine_quality
 import spine_smart_rig
+import spine_v4
 from spine_validate import validate_rig, write_report
 
 
@@ -22,7 +23,8 @@ def run_pipeline(source: str, out_dir: str, name: str | None = None,
                  export_project: bool = True,
                  rig_profile: str = "simple", mesh_quality: str = "adaptive",
                  max_weight_influences: int = 2,
-                 naming_profile: str = "") -> dict:
+                 naming_profile: str = "",
+                 motion_plan: dict | None = None) -> dict:
     source = os.path.abspath(os.path.expanduser(source))
     out_dir = os.path.abspath(os.path.expanduser(out_dir))
     if not os.path.exists(source):
@@ -39,9 +41,7 @@ def run_pipeline(source: str, out_dir: str, name: str | None = None,
     )
     images_dir = os.path.join(out_dir, "images")
 
-    # The legacy/simple path stays unchanged. Smart profiles run a semantic pass
-    # before editable project creation so .spine receives the improved pivots,
-    # PSD semantics, hair/cloth chains, silhouette meshes, weights and motion.
+    # V3 remains the proven semantic-rig foundation.
     if smart_enabled:
         smart_report = spine_smart_rig.enhance(
             result["files"]["json"], profile=rig_profile,
@@ -62,6 +62,17 @@ def run_pipeline(source: str, out_dir: str, name: str | None = None,
                 result["anims"].append(clip)
         if smart_report.get("facial_controls", {}).get("eyelids") and "blink" not in result.setdefault("anims", []):
             result["anims"].append("blink")
+
+        # V4 is deliberately a post-pass: visual anatomy rescues weak naming,
+        # then pose-beat timing, overlap, asymmetry, contacts and FX are polished.
+        v4_report = spine_v4.apply(
+            result["files"]["json"], images_dir=images_dir,
+            naming_profile=naming_profile, naming_source=source,
+            motion_plan=motion_plan, smart_report=smart_report,
+        )
+        result["animation_intelligence"] = v4_report
+        if v4_report.get("visual_bones_added"):
+            result["bones"] = result.get("bones", []) + [item["bone"] for item in v4_report["visual_bones_added"]]
 
     if make_editable:
         if spine_cli.available():
@@ -100,9 +111,12 @@ def run_pipeline(source: str, out_dir: str, name: str | None = None,
         "rig_profile": rig_profile, "mesh_quality": mesh_quality,
         "max_weight_influences": max_weight_influences,
         "naming_profile": naming_profile,
+        "animation_intelligence_v4": bool(motion_plan),
     }
     if result.get("smart_rig"):
         report["smart_rig"] = result["smart_rig"]
+    if result.get("animation_intelligence"):
+        report["animation_intelligence"] = result["animation_intelligence"]
     report["spine_cli"] = {"available": spine_cli.available(), "path": spine_cli.SPINE_BIN}
     report_path = write_report(report, os.path.join(out_dir, "rig_report.json"))
     result["validation"] = report

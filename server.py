@@ -11,6 +11,7 @@ from mcp.server.fastmcp import FastMCP
 
 import spine_brain
 import spine_cli
+import spine_motion_intelligence
 import spine_preview
 import spine_quality
 import spine_rig
@@ -38,7 +39,11 @@ def spine_doctor() -> dict:
         "spine_version": spine_cli.version() if spine_cli.available() else None,
         "deps": deps,
         "smart_animation_director": True,
+        "animation_intelligence": 4,
         "psd_semantic_intelligence": 3,
+        "visual_anatomy": True,
+        "pose_beat_planning": True,
+        "animation_quality_audit": True,
         "smart_rig_profiles": ["biped", "quadruped", "winged", "prop", "*_2_5d"],
         "secondary_systems": ["hair", "cloth", "tail", "wing"],
     }
@@ -46,7 +51,7 @@ def spine_doctor() -> dict:
 
 @mcp.tool()
 def inspect_source(source: str, source_group: str = "", naming_profile: str = "") -> dict:
-    """Inspect source art and return layer structure plus V3 semantic interpretation."""
+    """Inspect source art and return layer structure plus semantic interpretation."""
     if source.lower().endswith(".psd"):
         import tempfile
         inspection = spine_rig.inspect_psd(source, tempfile.mkdtemp(), source_group or None)
@@ -72,11 +77,7 @@ def inspect_source(source: str, source_group: str = "", naming_profile: str = ""
 
 @mcp.tool()
 def inspect_psd_semantics(source: str, source_group: str = "", naming_profile: str = "") -> dict:
-    """Return only the semantic scene graph for a PSD/export before rigging.
-
-    The scene graph classifies body parts, face pieces, hair types, cloth/tails/wings,
-    side, depth, material, state variants, secondary-motion needs and confidence.
-    """
+    """Return the semantic scene graph for a PSD/export before rigging."""
     inspection = inspect_source(source, source_group, naming_profile)
     return inspection["semantic_scene"]
 
@@ -84,12 +85,7 @@ def inspect_psd_semantics(source: str, source_group: str = "", naming_profile: s
 @mcp.tool()
 def save_naming_profile(path: str, aliases: dict | None = None,
                         exact: dict | None = None, states: dict | None = None) -> dict:
-    """Teach GPT Spine a studio/user PSD naming vocabulary.
-
-    Example aliases: {"hair": ["buhok", "hr"], "hand": ["kamay"]}.
-    Exact mappings override inference, e.g. {"HFRONT": "hair_front_bang"}.
-    A file named spine_naming.json next to the PSD is auto-detected by smart_build.
-    """
+    """Teach GPT Spine a studio/user PSD naming vocabulary."""
     return spine_semantics.save_profile(path, {
         "aliases": aliases or {}, "exact": exact or {}, "states": states or {},
     })
@@ -107,22 +103,38 @@ def _inspection_parts(inspection: dict) -> list[str]:
 @mcp.tool()
 def understand_animation(request: str, source: str = "", source_group: str = "",
                          naming_profile: str = "") -> dict:
-    """Interpret loose animation art direction using source semantics when available."""
+    """Interpret loose animation art direction and return rig + V4 motion decisions."""
     inspection = inspect_source(source, source_group, naming_profile) if source else None
     plan = spine_brain.plan_animation(request, _inspection_parts(inspection or {}))
+    semantic_scene = (inspection or {}).get("semantic_scene")
+    plan["motion_plan"] = spine_motion_intelligence.build_motion_plan(
+        request, plan["asset_type"], plan["animations"], semantic_scene,
+    )
     if inspection:
         plan["inspection"] = inspection
-        plan["semantic_scene"] = inspection.get("semantic_scene")
+        plan["semantic_scene"] = semantic_scene
     return plan
+
+
+@mcp.tool()
+def plan_motion(request: str, asset_type: str = "biped",
+                animations: list[str] | None = None) -> dict:
+    """Plan V4 style, pose beats, timing, energy hierarchy, asymmetry, contacts and FX cues."""
+    return spine_motion_intelligence.build_motion_plan(
+        request, asset_type, animations or ["idle"], None,
+    )
 
 
 @mcp.tool()
 def smart_build(source: str, out_dir: str, request: str, name: str = "",
                 source_group: str = "", make_editable: bool = True,
                 make_preview: bool = True, naming_profile: str = "") -> dict:
-    """Natural-language build with PSD semantics, adaptive rigging, animation and QA."""
+    """Natural-language V4 build: semantics, visual anatomy, polished motion and QA."""
     inspection = inspect_source(source, source_group, naming_profile)
     plan = spine_brain.plan_animation(request, _inspection_parts(inspection))
+    motion_plan = spine_motion_intelligence.build_motion_plan(
+        request, plan["asset_type"], plan["animations"], inspection.get("semantic_scene"),
+    )
     result = workflow.run_pipeline(
         source, out_dir, name or None,
         animations=plan["animations"], clean_mesh=plan["clean_mesh"],
@@ -132,8 +144,9 @@ def smart_build(source: str, out_dir: str, request: str, name: str = "",
         make_preview=make_preview, rig_profile=plan["rig_profile"],
         mesh_quality=plan["mesh_quality"],
         max_weight_influences=plan["max_weight_influences"],
-        naming_profile=naming_profile,
+        naming_profile=naming_profile, motion_plan=motion_plan,
     )
+    plan["motion_plan"] = motion_plan
     result["director_plan"] = plan
     result["source_inspection"] = inspection
     return result
@@ -147,7 +160,7 @@ def rig_and_animate(source: str, out_dir: str, name: str = "", kind: str = "symb
                     slot_presets: list[str] | None = None,
                     fx_presets: list[str] | None = None,
                     source_group: str = "") -> dict:
-    """Build a deterministic legacy/simple rig. Use smart_build for semantic rigs."""
+    """Build a deterministic legacy/simple rig. Use smart_build for V4 semantic rigs."""
     result = spine_rig.build_rig(
         source, out_dir, name or None, kind, anims,
         clean_mesh=clean_mesh, auto_weight=auto_weight,
@@ -173,8 +186,8 @@ def build_workflow(source: str, out_dir: str, name: str = "",
                    source_group: str = "", make_editable: bool = True,
                    make_preview: bool = True, rig_profile: str = "simple",
                    mesh_quality: str = "adaptive", max_weight_influences: int = 2,
-                   naming_profile: str = "") -> dict:
-    """Run the complete validated workflow, optionally with a smart rig profile."""
+                   naming_profile: str = "", motion_plan: dict | None = None) -> dict:
+    """Run the complete validated workflow, optionally with Animation Intelligence V4."""
     return workflow.run_pipeline(
         source, out_dir, name or None,
         rig_only=rig_only, animations=animations,
@@ -184,7 +197,7 @@ def build_workflow(source: str, out_dir: str, name: str = "",
         make_editable=make_editable, make_preview=make_preview,
         rig_profile=rig_profile, mesh_quality=mesh_quality,
         max_weight_influences=max_weight_influences,
-        naming_profile=naming_profile,
+        naming_profile=naming_profile, motion_plan=motion_plan,
     )
 
 
