@@ -1,0 +1,13 @@
+# 124 MB of virtualenv is not the project.
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+.DS_Store
+
+# Rigs and previews written while testing against real art.
+*.spine
+_preview.png
