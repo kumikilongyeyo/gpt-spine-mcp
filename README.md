@@ -53,7 +53,7 @@ For an immutable release, replace the URL below with the published fork and pin
 the tag:
 
 ```bash
-uv tool install "gpt-spine-mcp[agents] @ git+https://github.com/kumikilongyeyo/gpt-spine-mcp@v0.6.0"
+uv tool install "gpt-spine-mcp[agents] @ git+https://github.com/kumikilongyeyo/gpt-spine-mcp@v0.6.1"
 codex mcp add gpt-spine -- gpt-spine-mcp
 ```
 
@@ -175,6 +175,7 @@ preview output. Tests do not require a Spine licence or OpenAI API key.
 | `v0.5.0` | slot FX, clipping, validation, OpenAI/Codex client |
 | `v0.5.1` | macOS/Windows/Linux installers and cross-platform CI |
 | `v0.6.0` | nested PSD groups, semantic inspection, reference preview QA, portable image checks |
+| `v0.6.1` | package QA module and install PSD composite dependencies |
 | `v1.0.0` | planned stable workflow after real-asset compatibility testing |
 
 Never move a published tag. Patch a release and add a new tag so a known-good
