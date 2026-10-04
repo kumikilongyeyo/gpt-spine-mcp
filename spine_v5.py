@@ -1,57 +1,24 @@
 """V5 rendered self-critique and Photoshop blend translation.
 
-Runs after V4 and before editable .spine creation.  It preserves PSD blend intent,
+Runs after V4 and before editable .spine creation. It preserves PSD blend intent,
 fixes blend-neutral transparent texels, renders representative animation frames,
 audits visual problems, and applies only conservative automatic corrections.
+
+V6 hardening note: PSD traversal/naming now comes from ``spine_psd`` so rigging,
+inspection and blend translation cannot silently disagree about selected groups or
+attachment names. JSON writes use ``spine_guard.atomic_write_json``.
 """
 from __future__ import annotations
 
 import json
 import os
-import re
-from typing import Iterable
 
 from PIL import Image, ImageChops, ImageStat
 
 import spine_blend
+import spine_guard
 import spine_preview
-
-
-def _walk_psd_layers(parent, prefix=""):
-    for layer in parent:
-        path = f"{prefix}/{layer.name.strip()}" if prefix else layer.name.strip()
-        if not layer.is_visible():
-            continue
-        if layer.is_group():
-            yield from _walk_psd_layers(layer, path)
-        else:
-            yield path, layer
-
-
-def _find_group(psd, requested: str):
-    wanted = requested.strip().casefold().strip("/")
-    found = []
-    def visit(parent, prefix=""):
-        for layer in parent:
-            path = f"{prefix}/{layer.name.strip()}" if prefix else layer.name.strip()
-            if layer.is_group():
-                if layer.name.strip().casefold() == wanted or path.casefold() == wanted:
-                    found.append((path, layer))
-                visit(layer, path)
-    visit(psd)
-    if len(found) != 1:
-        return psd, ""
-    return found[0][1], found[0][0]
-
-
-def _safe_part_name(path: str, used: set[str]) -> str:
-    base = re.sub(r"[^A-Za-z0-9_.-]+", "_", path.strip()).strip("_.") or "part"
-    candidate, index = base, 2
-    while candidate.casefold() in used:
-        candidate = f"{base}_{index}"
-        index += 1
-    used.add(candidate.casefold())
-    return candidate
+import spine_psd
 
 
 def apply_psd_blends(source: str, runtime_json: str, images_dir: str,
@@ -59,22 +26,15 @@ def apply_psd_blends(source: str, runtime_json: str, images_dir: str,
     """Read PSD blend modes and translate them to Spine slot blending."""
     if not source.lower().endswith(".psd"):
         return {"applied": False, "reason": "source is not PSD", "layers": [], "warnings": []}
-    from psd_tools import PSDImage
 
-    psd = PSDImage.open(source)
-    parent, prefix = psd, ""
-    if source_group:
-        parent, prefix = _find_group(psd, source_group)
-    used = set()
+    scan = spine_psd.scan_psd(source, source_group)
     metadata = {}
     warnings = []
-    for path, layer in _walk_psd_layers(parent, prefix):
-        if layer.bbox == (0, 0, 0, 0):
-            continue
-        name = _safe_part_name(path, used)
-        role_hint = path
+    for leaf in scan.leaves:
+        name = leaf.attachment
+        path = leaf.layer_path
         strategy = spine_blend.translate_psd_blend(
-            getattr(layer, "blend_mode", None), role=role_hint, layer_name=path,
+            leaf.blend_mode, role=leaf.role, layer_name=path,
         )
         meta = {
             "layer_path": path,
@@ -89,7 +49,8 @@ def apply_psd_blends(source: str, runtime_json: str, images_dir: str,
         image_path = os.path.join(images_dir, f"{name}.png")
         if os.path.isfile(image_path):
             try:
-                image = Image.open(image_path).convert("RGBA")
+                with Image.open(image_path) as source_image:
+                    image = source_image.convert("RGBA")
                 risk = spine_blend.source_risk(image, strategy["spine"])
                 meta["texture_risk"] = risk
                 cleaned = spine_blend.sanitize_transparent_rgb(image, strategy["spine"])
@@ -111,10 +72,14 @@ def apply_psd_blends(source: str, runtime_json: str, images_dir: str,
             slot.pop("blend", None)
         else:
             slot["blend"] = blend
-        patched.append({"slot": name, "psd": meta["psd_blend"], "spine": blend,
-                        "exact": meta["blend_exact"], "bake_required": meta["bake_required"]})
-    with open(runtime_json, "w", encoding="utf-8") as handle:
-        json.dump(data, handle, separators=(",", ":"))
+        patched.append({
+            "slot": name,
+            "psd": meta["psd_blend"],
+            "spine": blend,
+            "exact": meta["blend_exact"],
+            "bake_required": meta["bake_required"],
+        })
+    spine_guard.atomic_write_json(runtime_json, data)
     slot_audit = spine_blend.audit_slots(data.get("slots", []), metadata)
     return {
         "applied": True,
@@ -141,7 +106,8 @@ def _sample_times(animation: dict, planned: dict | None = None) -> list[float]:
     ordered = sorted(times)
     if len(ordered) <= 7:
         return ordered
-    picks = [0, 1, len(ordered)//3, len(ordered)//2, 2*len(ordered)//3, len(ordered)-2, len(ordered)-1]
+    picks = [0, 1, len(ordered) // 3, len(ordered) // 2,
+             2 * len(ordered) // 3, len(ordered) - 2, len(ordered) - 1]
     return [ordered[index] for index in sorted(set(picks))]
 
 
@@ -152,26 +118,28 @@ def _frame_metrics(image: Image.Image) -> dict:
     if not bbox:
         return {"blank": True, "coverage": 0.0, "touches_edge": False, "dark_visible": 0.0}
     width, height = rgba.size
-    l, t, r, b = bbox
-    coverage = ((r-l) * (b-t)) / max(1, width * height)
-    pixels = list(rgba.getdata())
-    visible = [(rr, gg, bb, aa) for rr, gg, bb, aa in pixels if aa >= 48]
-    dark = sum(1 for rr, gg, bb, aa in visible if max(rr, gg, bb) < 18) / max(1, len(visible))
+    left, top, right, bottom = bbox
+    coverage = ((right - left) * (bottom - top)) / max(1, width * height)
+    # Keep this metric cheap: operate only inside the visible bounding box.
+    visible_crop = rgba.crop(bbox)
+    pixels = visible_crop.getdata()
+    visible = [(r, g, b, a) for r, g, b, a in pixels if a >= 48]
+    dark = sum(1 for r, g, b, _ in visible if max(r, g, b) < 18) / max(1, len(visible))
     return {
         "blank": False,
         "coverage": round(coverage, 4),
-        "touches_edge": bool(l <= 1 or t <= 1 or r >= width-1 or b >= height-1),
+        "touches_edge": bool(left <= 1 or top <= 1 or right >= width - 1 or bottom >= height - 1),
         "dark_visible": round(dark, 4),
-        "bbox": [l, t, r, b],
+        "bbox": [left, top, right, bottom],
     }
 
 
 def _difference(a: Image.Image, b: Image.Image) -> float:
-    aa = a.convert("RGB")
-    bb = b.convert("RGB")
-    if aa.size != bb.size:
-        bb = bb.resize(aa.size)
-    diff = ImageChops.difference(aa, bb)
+    before = a.convert("RGB")
+    after = b.convert("RGB")
+    if before.size != after.size:
+        after = after.resize(before.size)
+    diff = ImageChops.difference(before, after)
     stat = ImageStat.Stat(diff)
     return round(sum(stat.mean) / (3 * 255), 4)
 
@@ -179,8 +147,6 @@ def _difference(a: Image.Image, b: Image.Image) -> float:
 def _conservative_autofix(data: dict, issues: list[dict]) -> list[str]:
     """Apply only fixes that cannot destroy authored posing."""
     fixes = []
-    # If an FX slot is visible at setup due to a generated track, force setup alpha to 0.
-    fx_words = ("fx_", "glow", "flash", "spark", "shine", "particle", "burst")
     for issue in issues:
         if issue.get("kind") != "fx_setup_visible":
             continue
@@ -209,8 +175,9 @@ def visual_self_critique(runtime_json: str, images_dir: str, out_dir: str,
         times = _sample_times(animation, planned_clips.get(clip))
         rendered = []
         for index, time in enumerate(times):
-            frame = spine_preview.render_frame(data, images_dir, clip, time, maxpx=320,
-                                               transparent=True)
+            frame = spine_preview.render_frame(
+                data, images_dir, clip, time, maxpx=320, transparent=True,
+            )
             path = os.path.join(out_dir, f"{clip}_{index:02d}_{time:.3f}.png")
             frame.save(path)
             metrics = _frame_metrics(frame)
@@ -219,27 +186,33 @@ def visual_self_critique(runtime_json: str, images_dir: str, out_dir: str,
                 issues.append({"kind": "blank_frame", "clip": clip, "time": time, "severity": "high"})
             if metrics["touches_edge"]:
                 issues.append({"kind": "possible_crop", "clip": clip, "time": time, "severity": "medium"})
-        changes = []
-        for before, after in zip(rendered, rendered[1:]):
-            changes.append(_difference(before["image"], after["image"]))
-        if len(changes) >= 2 and max(changes, default=0) < .008 and clip not in {"blink"}:
-            issues.append({"kind": "visually_static", "clip": clip, "severity": "medium",
-                           "max_frame_change": max(changes, default=0)})
+        changes = [
+            _difference(before["image"], after["image"])
+            for before, after in zip(rendered, rendered[1:])
+        ]
+        if len(changes) >= 2 and max(changes, default=0) < .008 and clip != "blink":
+            issues.append({
+                "kind": "visually_static",
+                "clip": clip,
+                "severity": "medium",
+                "max_frame_change": max(changes, default=0),
+            })
         if changes and max(changes) > .72:
-            issues.append({"kind": "visual_pop_spike", "clip": clip, "severity": "medium",
-                           "max_frame_change": max(changes)})
+            issues.append({
+                "kind": "visual_pop_spike",
+                "clip": clip,
+                "severity": "medium",
+                "max_frame_change": max(changes),
+            })
         frames_report[clip] = {
             "times": times,
             "frame_changes": changes,
-            "frames": [{k: v for k, v in item.items() if k != "image"} for item in rendered],
+            "frames": [{key: value for key, value in item.items() if key != "image"} for item in rendered],
         }
 
-    fixes = []
-    if autofix:
-        fixes = _conservative_autofix(data, issues)
-        if fixes:
-            with open(runtime_json, "w", encoding="utf-8") as handle:
-                json.dump(data, handle, separators=(",", ":"))
+    fixes = _conservative_autofix(data, issues) if autofix else []
+    if fixes:
+        spine_guard.atomic_write_json(runtime_json, data)
 
     high = sum(1 for item in issues if item.get("severity") == "high")
     medium = sum(1 for item in issues if item.get("severity") == "medium")
