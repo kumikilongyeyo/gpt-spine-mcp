@@ -9,6 +9,7 @@ import spine_rig
 import spine_quality
 import spine_smart_rig
 import spine_v4
+import spine_v5
 from spine_validate import validate_rig, write_report
 
 
@@ -24,7 +25,8 @@ def run_pipeline(source: str, out_dir: str, name: str | None = None,
                  rig_profile: str = "simple", mesh_quality: str = "adaptive",
                  max_weight_influences: int = 2,
                  naming_profile: str = "",
-                 motion_plan: dict | None = None) -> dict:
+                 motion_plan: dict | None = None,
+                 visual_qa: bool = True) -> dict:
     source = os.path.abspath(os.path.expanduser(source))
     out_dir = os.path.abspath(os.path.expanduser(out_dir))
     if not os.path.exists(source):
@@ -41,7 +43,6 @@ def run_pipeline(source: str, out_dir: str, name: str | None = None,
     )
     images_dir = os.path.join(out_dir, "images")
 
-    # V3 remains the proven semantic-rig foundation.
     if smart_enabled:
         smart_report = spine_smart_rig.enhance(
             result["files"]["json"], profile=rig_profile,
@@ -63,8 +64,6 @@ def run_pipeline(source: str, out_dir: str, name: str | None = None,
         if smart_report.get("facial_controls", {}).get("eyelids") and "blink" not in result.setdefault("anims", []):
             result["anims"].append("blink")
 
-        # V4 is deliberately a post-pass: visual anatomy rescues weak naming,
-        # then pose-beat timing, overlap, asymmetry, contacts and FX are polished.
         v4_report = spine_v4.apply(
             result["files"]["json"], images_dir=images_dir,
             naming_profile=naming_profile, naming_source=source,
@@ -73,6 +72,14 @@ def run_pipeline(source: str, out_dir: str, name: str | None = None,
         result["animation_intelligence"] = v4_report
         if v4_report.get("visual_bones_added"):
             result["bones"] = result.get("bones", []) + [item["bone"] for item in v4_report["visual_bones_added"]]
+
+    # V5 runs before .spine creation so PSD compositing semantics and any safe
+    # visual-QA fixes are already present when the licensed CLI imports the JSON.
+    if visual_qa and not rig_only:
+        result["visual_intelligence"] = spine_v5.apply(
+            source, result["files"]["json"], images_dir, out_dir,
+            source_group=source_group or "", motion_plan=motion_plan,
+        )
 
     if make_editable:
         if spine_cli.available():
@@ -112,11 +119,14 @@ def run_pipeline(source: str, out_dir: str, name: str | None = None,
         "max_weight_influences": max_weight_influences,
         "naming_profile": naming_profile,
         "animation_intelligence_v4": bool(motion_plan),
+        "visual_intelligence_v5": visual_qa,
     }
     if result.get("smart_rig"):
         report["smart_rig"] = result["smart_rig"]
     if result.get("animation_intelligence"):
         report["animation_intelligence"] = result["animation_intelligence"]
+    if result.get("visual_intelligence"):
+        report["visual_intelligence"] = result["visual_intelligence"]
     report["spine_cli"] = {"available": spine_cli.available(), "path": spine_cli.SPINE_BIN}
     report_path = write_report(report, os.path.join(out_dir, "rig_report.json"))
     result["validation"] = report
