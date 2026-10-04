@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 
+import spine_critic
 import spine_motion_intelligence
 import spine_v5
 
@@ -24,12 +25,9 @@ KNOWN_TRAPS = [
 ]
 
 
-def _severity_weight(value: str) -> int:
-    return {"high": 3, "medium": 2, "low": 1}.get(value, 1)
-
-
-def diagnose_visual_report(visual_report: dict, structural_report: dict | None = None) -> dict:
-    """Convert V5/structural QA into explicit revision recommendations."""
+def diagnose_visual_report(visual_report: dict, structural_report: dict | None = None,
+                           critic_report: dict | None = None) -> dict:
+    """Convert rendered, structural, and deterministic critic QA into revision actions."""
     issues = list(visual_report.get("issues", []))
     actions = []
     for issue in issues:
@@ -55,13 +53,26 @@ def diagnose_visual_report(visual_report: dict, structural_report: dict | None =
             if "perfectly mirrored" in problem:
                 actions.append({"clip": clip, "priority": 45, "cause": "mechanical_symmetry",
                                 "change": "offset left/right timing and amplitude while preserving intent"})
+    for finding in (critic_report or {}).get("findings", []):
+        priority = 85 if finding.get("severity") == "high" else 60
+        actions.append({
+            "clip": finding.get("clip", ""),
+            "priority": priority,
+            "cause": finding.get("check", "deterministic_critic"),
+            "bone": finding.get("bone", ""),
+            "metric": finding.get("metric"),
+            "value": finding.get("value"),
+            "threshold": finding.get("threshold"),
+            "change": finding.get("suggested_patch", {}),
+        })
     actions.sort(key=lambda item: (-item["priority"], item.get("clip", "")))
     return {"ok": not actions, "actions": actions, "known_traps": KNOWN_TRAPS}
 
 
 def inspect_build(runtime_json: str, images_dir: str, out_dir: str,
-                  motion_plan: dict | None = None) -> dict:
-    """Render representative beats and produce a single revision report."""
+                  motion_plan: dict | None = None,
+                  secondary_chains: dict | None = None) -> dict:
+    """Render representative beats and produce one combined revision report."""
     visual = spine_v5.visual_self_critique(
         runtime_json, images_dir, os.path.join(out_dir, "engineering_review"),
         motion_plan=motion_plan, autofix=False,
@@ -69,11 +80,22 @@ def inspect_build(runtime_json: str, images_dir: str, out_dir: str,
     with open(runtime_json, encoding="utf-8") as handle:
         data = json.load(handle)
     structural = spine_motion_intelligence.audit_animation(data, motion_plan)
-    diagnosis = diagnose_visual_report(visual, structural)
+    critic = spine_critic.audit(
+        data, motion_plan=motion_plan,
+        secondary_chains=secondary_chains,
+        fps=int(data.get("skeleton", {}).get("fps") or 30),
+    )
+    diagnosis = diagnose_visual_report(visual, structural, critic)
     return {
         "version": 7,
         "visual": visual,
         "structural": structural,
+        "critic": critic,
         "diagnosis": diagnosis,
-        "ready": visual.get("ok", False) and structural.get("score", 0) >= 80 and not diagnosis["actions"],
+        "ready": (
+            visual.get("ok", False)
+            and structural.get("score", 0) >= 80
+            and critic.get("ok", False)
+            and not diagnosis["actions"]
+        ),
     }
