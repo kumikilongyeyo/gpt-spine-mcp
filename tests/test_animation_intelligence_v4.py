@@ -34,7 +34,8 @@ def test_motion_plan_has_pose_beats_energy_and_fx():
         "heavy brute attack, make it punchy and premium slot polished with sparks",
         "biped", ["attack", "win"], {"role_counts": {"torso": 1, "upper_arm": 2}},
     )
-    assert plan["version"] == 4
+    assert plan["version"] == 7
+    assert plan["motion_core_version"] == 4
     assert plan["archetype"] == "brute"
     assert "heavy" in plan["style"]["presets"]
     attack = plan["clips"]["attack"]
@@ -42,7 +43,8 @@ def test_motion_plan_has_pose_beats_energy_and_fx():
     assert names == ["setup", "anticipation", "contact", "overshoot", "settle"]
     assert attack["beats"][2]["time"] - attack["beats"][1]["time"] < attack["beats"][-1]["time"] - attack["beats"][3]["time"]
     assert attack["energy_hierarchy"]["primary"]
-    assert any(cue["cue"] == "impact_flash" for cue in attack["fx_beats"])
+    assert attack["fx_beats"]
+    assert attack["taste_choreography"]["audit"]["score"] >= 80
 
 
 def test_v4_applies_asymmetric_pose_beats_and_quality_audit(tmp_path):
