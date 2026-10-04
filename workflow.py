@@ -6,6 +6,7 @@ import os
 import spine_cli
 import spine_guard
 import spine_preview
+import spine_psd_bridge
 import spine_quality
 import spine_rig
 import spine_smart_rig
@@ -32,16 +33,39 @@ def run_pipeline(source: str, out_dir: str, name: str | None = None,
     out_dir = os.path.abspath(os.path.expanduser(out_dir))
     if not os.path.exists(source):
         raise FileNotFoundError(source)
+
     requested = [] if rig_only else animations
     smart_enabled = not rig_only and rig_profile not in {"", "simple", "legacy", None}
+    resolved_name = name or os.path.splitext(os.path.basename(source.rstrip("/")))[0]
+
+    # V6: layered PSDs are parsed/extracted by one shared implementation, then
+    # adapted to the mature PhotoshopToSpine folder contract. The old PSD reader
+    # remains only as a legacy direct-call fallback outside this validated flow.
+    build_source = source
+    build_source_group = source_group
+    source_bridge = None
+    if source.lower().endswith(".psd"):
+        source_bridge = spine_psd_bridge.prepare_build_source(
+            source, out_dir, source_group or "",
+        )
+        build_source = source_bridge["source"]
+        build_source_group = None
+
     result = spine_rig.build_rig(
-        source, out_dir, name, anims=requested,
+        build_source, out_dir, resolved_name, anims=requested,
         clean_mesh=(clean_mesh if not smart_enabled else False),
         auto_weight=(auto_weight if not smart_enabled else False),
         ik=(ik if not smart_enabled else False), clipping=clipping,
-        slot_presets=[] if rig_only else slot_presets, source_group=source_group,
+        slot_presets=[] if rig_only else slot_presets, source_group=build_source_group,
         fx_presets=[] if rig_only else fx_presets,
     )
+    if source_bridge:
+        result["source_bridge"] = {
+            "shared_psd_parser": True,
+            "prepared_layout": source_bridge["layout"],
+            "parts": len(source_bridge["draw"]),
+        }
+
     runtime_json = result["files"]["json"]
     images_dir = os.path.join(out_dir, "images")
     transactions = []
@@ -103,14 +127,14 @@ def run_pipeline(source: str, out_dir: str, name: str | None = None,
         transactions.append(transaction)
         result["visual_intelligence"] = visual_report
 
-    # Content-address the canonical runtime after all mutating stages.  This is
-    # returned to MCP clients so a later restore/edit can reject stale context.
     result["gauntlet"] = {
         "version": 6,
         "transactions": transactions,
         "runtime_state": spine_guard.file_state(runtime_json),
         "backup_count": len(spine_guard.list_backups(runtime_json)),
+        "shared_psd_parser": bool(source_bridge),
         "rules": [
+            "layered PSD builds use one shared parser/extractor",
             "each mutating JSON stage runs on a temporary copy",
             "canonical runtime is atomically replaced only after valid JSON is produced",
             "bounded backups permit rollback without accumulating unbounded files",
@@ -156,6 +180,7 @@ def run_pipeline(source: str, out_dir: str, name: str | None = None,
         "animation_intelligence_v4": bool(motion_plan),
         "visual_intelligence_v5": visual_qa,
         "gauntlet_hardening_v6": True,
+        "shared_psd_parser_v6": bool(source_bridge),
     }
     if result.get("smart_rig"):
         report["smart_rig"] = result["smart_rig"]
