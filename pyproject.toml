@@ -1,6 +1,6 @@
 [project]
 name = "gpt-spine-mcp"
-version = "0.7.1"
+version = "0.8.0"
 description = "OpenAI/Codex MCP workflow for production Spine 2D rigs and animation"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -43,7 +43,7 @@ build-backend = "hatchling.build"
 include = [
   "server.py", "spine_cli.py", "spine_rig.py", "spine_preview.py",
   "spine_validate.py", "spine_quality.py", "spine_motion.py", "spine_fx.py",
-  "spine_spec.py", "spine_brain.py", "spine_smart_rig.py", "workflow.py",
+  "spine_spec.py", "spine_brain.py", "spine_semantics.py", "spine_smart_rig.py", "workflow.py",
   "gpt_spine.py", "openai_agent.py",
 ]
 

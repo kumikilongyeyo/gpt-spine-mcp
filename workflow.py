@@ -21,7 +21,8 @@ def run_pipeline(source: str, out_dir: str, name: str | None = None,
                  make_editable: bool = True, make_preview: bool = True,
                  export_project: bool = True,
                  rig_profile: str = "simple", mesh_quality: str = "adaptive",
-                 max_weight_influences: int = 2) -> dict:
+                 max_weight_influences: int = 2,
+                 naming_profile: str = "") -> dict:
     source = os.path.abspath(os.path.expanduser(source))
     out_dir = os.path.abspath(os.path.expanduser(out_dir))
     if not os.path.exists(source):
@@ -36,24 +37,31 @@ def run_pipeline(source: str, out_dir: str, name: str | None = None,
         slot_presets=[] if rig_only else slot_presets, source_group=source_group,
         fx_presets=[] if rig_only else fx_presets,
     )
+    images_dir = os.path.join(out_dir, "images")
 
-    # The legacy/simple path is intentionally unchanged. Smart profiles run a
-    # post-rig semantic pass before an editable project is imported/exported so
-    # the .spine file receives the improved pivots, meshes, weights and motion.
+    # The legacy/simple path stays unchanged. Smart profiles run a semantic pass
+    # before editable project creation so .spine receives the improved pivots,
+    # PSD semantics, hair/cloth chains, silhouette meshes, weights and motion.
     if smart_enabled:
         smart_report = spine_smart_rig.enhance(
             result["files"]["json"], profile=rig_profile,
             mesh_quality=mesh_quality,
             max_influences=max(1, min(2, int(max_weight_influences))),
             add_ik=ik,
+            images_dir=images_dir,
+            naming_profile=naming_profile,
+            naming_source=source,
         )
         result["smart_rig"] = smart_report
         if smart_report.get("bones_added"):
             result["bones"] = result.get("bones", []) + smart_report["bones_added"]
         result["mesh"] = result.get("mesh", False) or smart_report.get("meshes_upgraded", 0) > 0
         result["weighted"] = result.get("weighted", False) or smart_report.get("weighted_vertices", False)
-
-    images_dir = os.path.join(out_dir, "images")
+        for clip in smart_report.get("transformation_clips", []):
+            if clip not in result.setdefault("anims", []):
+                result["anims"].append(clip)
+        if smart_report.get("facial_controls", {}).get("eyelids") and "blink" not in result.setdefault("anims", []):
+            result["anims"].append("blink")
 
     if make_editable:
         if spine_cli.available():
@@ -91,6 +99,7 @@ def run_pipeline(source: str, out_dir: str, name: str | None = None,
         "fx_presets": fx_presets or [],
         "rig_profile": rig_profile, "mesh_quality": mesh_quality,
         "max_weight_influences": max_weight_influences,
+        "naming_profile": naming_profile,
     }
     if result.get("smart_rig"):
         report["smart_rig"] = result["smart_rig"]
