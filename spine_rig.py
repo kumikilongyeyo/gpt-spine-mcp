@@ -107,7 +107,10 @@ def _classify(name: str, state_bases) -> str:
 
 
 def build_rig(source: str, out_dir: str, name: str | None = None,
-              kind: str = "symbol", anims: list[str] | None = None) -> dict:
+              kind: str = "symbol", anims: list[str] | None = None,
+              *, clean_mesh: bool = False, auto_weight: bool = False,
+              ik: bool = False, clipping: bool = False,
+              slot_presets: list[str] | None = None) -> dict:
     """Build the skeleton. `source` is an export folder or a .psd. Returns a
     summary dict {name, width, height, bones, slots, head_slot, variants, anims,
     files}."""
@@ -245,7 +248,8 @@ def build_rig(source: str, out_dir: str, name: str | None = None,
     blinkface = STATE_FAM.get(HEAD_SLOT, {}).get("blink") if HEAD_SLOT else None
 
     # ---- animations ----------------------------------------------------------
-    want = set(anims or ["idle", "win", "blink", "pop"])
+    requested = ["idle", "win", "blink", "pop"] if anims is None else list(anims)
+    want = set(requested)
     animations = {}
 
     D = 2.8
@@ -294,6 +298,45 @@ def build_rig(source: str, out_dir: str, name: str | None = None,
             "scale": [{"time": 0, "x": 1.12, "y": 0.84}, {"time": 0.16, "x": 0.94, "y": 1.08}, {"time": Pd, "x": 1, "y": 1}],
             "translate": [{"time": 0, "x": 0, "y": 10}, {"time": 0.16, "x": 0, "y": -3}, {"time": Pd, "x": 0, "y": 0}]}}}
 
+    # Names outside the built-in set are still useful workflow states.  Generate
+    # deterministic, editable starter motion instead of silently dropping them.
+    for state in requested:
+        if state in animations or state == "blink" and not blinkface:
+            continue
+        key = state.lower().replace("-", "_")
+        if key in {"intro", "enter", "spawn"}:
+            animations[state] = {"bones": {"body": {
+                "scale": [{"time": 0, "x": 0.15, "y": 0.15}, {"time": .32, "x": 1.12, "y": .92}, {"time": .55, "x": 1, "y": 1}],
+                "translate": [{"time": 0, "x": 0, "y": -24}, {"time": .32, "x": 0, "y": 8}, {"time": .55, "x": 0, "y": 0}],
+            }}}
+        elif key in {"steering", "steer", "turn"}:
+            animations[state] = {"bones": {"body": {"rotate": [
+                {"time": 0, "value": 0}, {"time": .35, "value": -8},
+                {"time": .7, "value": 8}, {"time": 1.05, "value": 0},
+            ]}}}
+        elif key in {"wave", "waving"}:
+            target = "head" if has_head else "body"
+            animations[state] = {"bones": {target: {"rotate": [
+                {"time": 0, "value": 0}, {"time": .18, "value": 12},
+                {"time": .36, "value": -12}, {"time": .54, "value": 12},
+                {"time": .75, "value": 0},
+            ]}}}
+        elif key in {"mega_win", "celebration", "celebrate"}:
+            animations[state] = {"bones": {"body": {
+                "scale": [{"time": 0, "x": 1, "y": 1}, {"time": .18, "x": 1.35, "y": .72},
+                          {"time": .42, "x": .82, "y": 1.3}, {"time": .72, "x": 1.12, "y": .92},
+                          {"time": 1.05, "x": 1, "y": 1}],
+                "rotate": [{"time": 0, "value": 0}, {"time": .25, "value": -14},
+                           {"time": .55, "value": 14}, {"time": 1.05, "value": 0}],
+                "translate": [{"time": 0, "x": 0, "y": 0}, {"time": .42, "x": 0, "y": 36},
+                              {"time": .75, "x": 0, "y": 0}, {"time": 1.05, "x": 0, "y": 0}],
+            }}}
+        else:
+            animations[state] = {"bones": {"body": {"scale": [
+                {"time": 0, "x": 1, "y": 1}, {"time": .3, "x": 1.04, "y": .97},
+                {"time": .6, "x": 1, "y": 1},
+            ]}}}
+
     # ignite — lava "catches fire": cold dark ember → red → orange → white-hot with
     # a flicker burst, ending at the bright idle baseline so it mixes back; a small
     # body scale-pop punctuates the heat surge. Only when there's a glow/lava part.
@@ -311,16 +354,82 @@ def build_rig(source: str, out_dir: str, name: str | None = None,
                                     {"time": 0.64, "x": 1.07, "y": 0.95}, {"time": 0.8, "x": 0.98, "y": 1.02},
                                     {"time": Ig, "x": 1, "y": 1}]}}}
 
-    skel = {"skeleton": {"hash": f"spine-mcp-{name}", "spine": "4.2.00",
+    # Optional slot presets are emitted as independent animations so games can
+    # mix them on a separate track. Prefer FX slots; fall back to every slot.
+    preset_targets = sorted(set(GLOWSET) | ADDITIVE_FX | FIRE) or list(draw_final)
+    for preset in slot_presets or []:
+        p = preset.strip().lower()
+        if p == "pulse":
+            timeline = {"rgba": [{"time": 0, "color": "ffffffff"},
+                                  {"time": .4, "color": "ffffff66"},
+                                  {"time": .8, "color": "ffffffff"}]}
+        elif p == "flash":
+            timeline = {"rgba": [{"time": 0, "color": "ffffffff"},
+                                  {"time": .08, "color": "ffffffff"},
+                                  {"time": .16, "color": "ffffff00"},
+                                  {"time": .28, "color": "ffffffff"}]}
+        elif p == "flicker":
+            timeline = {"rgba": [{"time": 0, "color": "ffffffff"},
+                                  {"time": .09, "color": "ffffff77"},
+                                  {"time": .17, "color": "ffffffff"},
+                                  {"time": .31, "color": "ffffff99"},
+                                  {"time": .45, "color": "ffffffff"}]}
+        else:
+            raise ValueError(f"unknown slot preset {preset!r}; use pulse, flash, or flicker")
+        animations[f"slot_{p}"] = {"slots": {n: {k: list(v) for k, v in timeline.items()}
+                                                for n in preset_targets}}
+
+    # A four-corner mesh is deliberately conservative: it preserves artwork and
+    # removes degenerate geometry while making every part deformable in Spine.
+    if clean_mesh or auto_weight:
+        bone_indexes = {b["name"]: i for i, b in enumerate(bones)}
+        for slot_name, slot_atts in attachments.items():
+            bone_index = bone_indexes[slotbone(slot_name)]
+            for entry in slot_atts.values():
+                w, h = float(entry["width"]), float(entry["height"])
+                x, y = float(entry.get("x", 0)), float(entry.get("y", 0))
+                xy = [(x - w / 2, y - h / 2), (x + w / 2, y - h / 2),
+                      (x + w / 2, y + h / 2), (x - w / 2, y + h / 2)]
+                entry.update({"type": "mesh", "uvs": [0, 1, 1, 1, 1, 0, 0, 0],
+                              "triangles": [0, 1, 2, 2, 3, 0], "hull": 4})
+                if auto_weight:
+                    entry["vertices"] = [value for vx, vy in xy
+                                         for value in (1, bone_index, vx, vy, 1)]
+                else:
+                    entry["vertices"] = [value for point in xy for value in point]
+
+    constraints = []
+    if ik:
+        constrained = "head" if has_head else "body"
+        target_world = bworld(constrained)
+        target = f"{constrained}_ik_target"
+        bones.append({"name": target, "parent": "root", "x": round(target_world[0], 2),
+                      "y": round(target_world[1], 2), "rotation": 0})
+        constraints.append({"name": f"{constrained}_ik", "target": target,
+                            "bones": [constrained], "mix": 1, "bendPositive": True})
+
+    if clipping and draw_final:
+        clip_name = "__gpt_spine_clip"
+        slots.insert(0, {"name": clip_name, "bone": "root", "attachment": clip_name})
+        attachments[clip_name] = {clip_name: {
+            "type": "clipping", "end": draw_final[-1], "vertexCount": 4,
+            "vertices": [round(-W / 2, 2), 0, round(W / 2, 2), 0,
+                         round(W / 2, 2), round(H, 2), round(-W / 2, 2), round(H, 2)],
+        }}
+
+    skel = {"skeleton": {"hash": f"gpt-spine-mcp-{name}", "spine": "4.2.00",
                          "x": round(-W / 2, 2), "y": 0, "width": round(W, 2), "height": round(H, 2),
                          "images": "./", "audio": ""},
             "bones": bones, "slots": slots, "skins": skins, "animations": animations}
+    if constraints:
+        skel["ik"] = constraints
     open(f"{out_dir}/{name}.json", "w").write(json.dumps(skel))
 
     return {
         "name": name, "width": round(W), "height": round(H),
         "bones": [b["name"] for b in bones], "slots": [s["name"] for s in slots],
         "head_slot": HEAD_SLOT, "variants": list(STATE_FAM.get(HEAD_SLOT, {})) if HEAD_SLOT else [],
-        "anims": list(animations),
+        "anims": list(animations), "mesh": clean_mesh or auto_weight,
+        "weighted": auto_weight, "ik": bool(constraints), "clipping": clipping,
         "files": {"json": f"{out_dir}/{name}.json", "atlas": f"{out_dir}/{name}.atlas", "png": f"{out_dir}/{name}.png"},
     }

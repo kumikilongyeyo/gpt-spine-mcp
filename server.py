@@ -27,8 +27,10 @@ from mcp.server.fastmcp import FastMCP
 import spine_rig
 import spine_cli
 import spine_preview
+import workflow
+from spine_validate import validate_rig
 
-mcp = FastMCP("spine")
+mcp = FastMCP("gpt-spine")
 
 
 @mcp.tool()
@@ -68,7 +70,10 @@ def inspect_source(source: str) -> dict:
 
 @mcp.tool()
 def rig_and_animate(source: str, out_dir: str, name: str = "", kind: str = "symbol",
-                    anims: list[str] | None = None, make_editable: bool = True) -> dict:
+                    anims: list[str] | None = None, make_editable: bool = True,
+                    clean_mesh: bool = False, auto_weight: bool = False,
+                    ik: bool = False, clipping: bool = False,
+                    slot_presets: list[str] | None = None) -> dict:
     """Build a rigged + animated Spine skeleton from a cut-up character.
 
     source        path to a .psd OR a PhotoshopToSpine export folder
@@ -80,12 +85,38 @@ def rig_and_animate(source: str, out_dir: str, name: str = "", kind: str = "symb
     make_editable also emit an editable <name>.spine next to the source (Spine CLI)
 
     Returns a summary incl. file paths and an editable-project path."""
-    res = spine_rig.build_rig(source, out_dir, name or None, kind, anims)
+    res = spine_rig.build_rig(source, out_dir, name or None, kind, anims,
+                              clean_mesh=clean_mesh, auto_weight=auto_weight,
+                              ik=ik, clipping=clipping, slot_presets=slot_presets)
     if make_editable and spine_cli.available():
         src_dir = source if os.path.isdir(source) else os.path.dirname(source)
         proj = os.path.join(src_dir, f"{res['name']}.spine")
         res["editable_project"] = spine_cli.make_project(res["files"]["json"], proj)
     return res
+
+
+@mcp.tool()
+def build_workflow(source: str, out_dir: str, name: str = "",
+                   rig_only: bool = False, animations: list[str] | None = None,
+                   clean_mesh: bool = False, auto_weight: bool = False,
+                   ik: bool = False, clipping: bool = False,
+                   slot_presets: list[str] | None = None,
+                   make_editable: bool = True, make_preview: bool = True) -> dict:
+    """Run the complete production workflow: rig, animate, mesh/weight, add
+    optional IK and clipping, save/export when Spine is installed, render a
+    preview, and write rig_report.json. Set rig_only for a zero-animation rig."""
+    return workflow.run_pipeline(
+        source, out_dir, name or None, rig_only=rig_only, animations=animations,
+        clean_mesh=clean_mesh, auto_weight=auto_weight, ik=ik, clipping=clipping,
+        slot_presets=slot_presets, make_editable=make_editable,
+        make_preview=make_preview,
+    )
+
+
+@mcp.tool()
+def validate_output(runtime_json: str, atlas: str = "", texture: str = "") -> dict:
+    """Validate bone, slot, skin, IK, atlas, texture, and animation references."""
+    return validate_rig(runtime_json, atlas or None, texture or None)
 
 
 @mcp.tool()
@@ -155,11 +186,7 @@ def main() -> None:
     """Console entry point (pyproject [project.scripts]).
 
     Named rather than left as a bare __main__ block so the package can be
-    launched as  from anywhere — which is what Provide a command to run with `uvx <command>`.
-
-See `uvx --help` for more information.
-    and the mozg plugin both do. A module-path launch only ever worked for
-    whoever had the checkout.
+    launched from anywhere by uvx, Codex, or the Agents SDK client.
     """
     mcp.run()
 

@@ -1,11 +1,11 @@
 [project]
-name = "spine-mcp"
-version = "0.1.0"
-description = "MCP server that rigs and animates Spine 2D skeletons from cut-up character art"
+name = "gpt-spine-mcp"
+version = "0.5.0"
+description = "OpenAI/Codex MCP workflow for production Spine 2D rigs and animation"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
-authors = [{ name = "Egor Fedorov" }]
+authors = [{ name = "Egor Fedorov" }, { name = "GPT Spine MCP contributors" }]
 keywords = ["mcp", "spine", "spine2d", "animation", "rigging", "gamedev"]
 classifiers = [
   "Development Status :: 4 - Beta",
@@ -26,13 +26,21 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/egorfedorov/spine-mcp"
+Homepage = "https://github.com/kumikilongyeyo/gpt-spine-mcp"
+Repository = "https://github.com/kumikilongyeyo/gpt-spine-mcp"
+Upstream = "https://github.com/egorfedorov/spine-mcp"
 
 # The entry point is what makes `uvx --from git+https://... spine-mcp` work, and
 # what the mozg plugin launches. Without it the server can only be started by
 # pointing an interpreter at a file on a path only its author has.
 [project.scripts]
+gpt-spine-mcp = "server:main"
+gpt-spine = "gpt_spine:main"
 spine-mcp = "server:main"
+
+[project.optional-dependencies]
+agents = ["openai-agents>=0.4,<1"]
+dev = ["pytest>=8,<9"]
 
 [build-system]
 requires = ["hatchling"]
@@ -40,4 +48,10 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 # Flat layout: four modules that import each other by name.
-include = ["server.py", "spine_cli.py", "spine_rig.py", "spine_preview.py"]
+include = [
+  "server.py", "spine_cli.py", "spine_rig.py", "spine_preview.py",
+  "spine_validate.py", "workflow.py", "gpt_spine.py", "openai_agent.py",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

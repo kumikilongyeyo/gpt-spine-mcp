@@ -3,3 +3,4 @@
 mcp[cli]>=1.2,<2
 pillow>=10
 psd-tools>=1.9
+openai-agents>=0.4,<1
