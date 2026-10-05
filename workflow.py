@@ -1,10 +1,12 @@
 """End-to-end GPT Spine build workflow used by both CLI and MCP."""
 from __future__ import annotations
 
+import json
 import os
 
 import spine_cli
 import spine_guard
+import spine_juice
 import spine_preview
 import spine_psd_bridge
 import spine_quality
@@ -13,6 +15,12 @@ import spine_smart_rig
 import spine_v4
 import spine_v5
 from spine_validate import validate_rig, write_report
+
+
+def _wants_juice(motion_plan: dict | None) -> bool:
+    style = (motion_plan or {}).get("style", {})
+    presets = set(style.get("presets", []))
+    return bool(presets & {"premium_slot", "punchy", "cute"}) or float(style.get("fx", 0)) >= .65
 
 
 def run_pipeline(source: str, out_dir: str, name: str | None = None,
@@ -112,6 +120,24 @@ def run_pipeline(source: str, out_dir: str, name: str | None = None,
         if v4_report.get("visual_bones_added"):
             result["bones"] = result.get("bones", []) + [item["bone"] for item in v4_report["visual_bones_added"]]
 
+        # Premium casual/slot prompts get a bounded character-life pass after the
+        # primary posing exists. It adds overlap/asymmetry/settle accents but is
+        # deliberately skipped for restrained styles.
+        if motion_plan and _wants_juice(motion_plan):
+            def juice_stage(staged_json: str):
+                with open(staged_json, encoding="utf-8") as handle:
+                    data = json.load(handle)
+                juiced, report = spine_juice.apply(data, motion_plan, intensity=1.0)
+                with open(staged_json, "w", encoding="utf-8") as handle:
+                    json.dump(juiced, handle, separators=(",", ":"))
+                return report
+
+            juice_report, transaction = spine_guard.run_json_stage(
+                runtime_json, "character-juice-v1", juice_stage,
+            )
+            transactions.append(transaction)
+            result["character_juice"] = juice_report
+
     # V5 runs before .spine creation so PSD compositing semantics and safe
     # visual-QA fixes are already present when the licensed CLI imports JSON.
     if visual_qa and not rig_only:
@@ -128,17 +154,19 @@ def run_pipeline(source: str, out_dir: str, name: str | None = None,
         result["visual_intelligence"] = visual_report
 
     result["gauntlet"] = {
-        "version": 6,
+        "version": 8,
         "transactions": transactions,
         "runtime_state": spine_guard.file_state(runtime_json),
         "backup_count": len(spine_guard.list_backups(runtime_json)),
         "shared_psd_parser": bool(source_bridge),
+        "character_juice": bool(result.get("character_juice")),
         "rules": [
             "layered PSD builds use one shared parser/extractor",
             "each mutating JSON stage runs on a temporary copy",
             "canonical runtime is atomically replaced only after valid JSON is produced",
             "bounded backups permit rollback without accumulating unbounded files",
             "SHA-256 state pins make stale edits detectable",
+            "premium casual/slot juice is added after primary posing and before rendered QA",
         ],
     }
 
@@ -178,14 +206,17 @@ def run_pipeline(source: str, out_dir: str, name: str | None = None,
         "max_weight_influences": max_weight_influences,
         "naming_profile": naming_profile,
         "animation_intelligence_v4": bool(motion_plan),
+        "character_juice_v1": bool(result.get("character_juice")),
         "visual_intelligence_v5": visual_qa,
-        "gauntlet_hardening_v6": True,
+        "gauntlet_hardening_v8": True,
         "shared_psd_parser_v6": bool(source_bridge),
     }
     if result.get("smart_rig"):
         report["smart_rig"] = result["smart_rig"]
     if result.get("animation_intelligence"):
         report["animation_intelligence"] = result["animation_intelligence"]
+    if result.get("character_juice"):
+        report["character_juice"] = result["character_juice"]
     if result.get("visual_intelligence"):
         report["visual_intelligence"] = result["visual_intelligence"]
     report["gauntlet"] = result["gauntlet"]
