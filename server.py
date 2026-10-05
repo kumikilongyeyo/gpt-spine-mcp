@@ -9,12 +9,14 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from mcp.server.fastmcp import FastMCP
 
+import spine_ad_gauntlet
 import spine_brain
 import spine_cli
 import spine_critic
 import spine_engineering_loop
 import spine_motion_intelligence
 import spine_preview
+import spine_prompt_intelligence
 import spine_quality
 import spine_rig
 import spine_semantics
@@ -42,8 +44,12 @@ def spine_doctor() -> dict:
         "deps": deps,
         "smart_animation_director": True,
         "animation_intelligence": 4,
-        "engineering_loop": 7,
+        "engineering_loop": 8,
         "deterministic_critic": 1,
+        "prompt_intelligence": 1,
+        "performance_acting": 1,
+        "art_director_gauntlet": 1,
+        "presentation_gate": True,
         "real_bezier_curves": True,
         "frame_grid_authoring": 30,
         "psd_semantic_intelligence": 3,
@@ -51,7 +57,7 @@ def spine_doctor() -> dict:
         "pose_beat_planning": True,
         "animation_quality_audit": True,
         "render_diagnose_revise": True,
-        "critic_checks": [2, 3, 5, 7, 8],
+        "critic_checks": [1, 2, 3, 5, 7, 8, 9],
         "smart_rig_profiles": ["biped", "quadruped", "winged", "prop", "*_2_5d"],
         "secondary_systems": ["hair", "cloth", "tail", "wing"],
     }
@@ -109,14 +115,32 @@ def _inspection_parts(inspection: dict) -> list[str]:
 
 
 @mcp.tool()
+def interpret_prompt(request: str, source: str = "", source_group: str = "",
+                     naming_profile: str = "") -> dict:
+    """Expand a short/typo-heavy prompt into inspectable animation intent and assumptions."""
+    inspection = inspect_source(source, source_group, naming_profile) if source else None
+    return spine_prompt_intelligence.interpret(
+        request,
+        source_parts=_inspection_parts(inspection or {}),
+        semantic_scene=(inspection or {}).get("semantic_scene"),
+    )
+
+
+@mcp.tool()
 def understand_animation(request: str, source: str = "", source_group: str = "",
                          naming_profile: str = "") -> dict:
-    """Interpret loose animation art direction and return rig + V4 motion decisions."""
+    """Interpret loose animation art direction and return rig + motion/performance decisions."""
     inspection = inspect_source(source, source_group, naming_profile) if source else None
-    plan = spine_brain.plan_animation(request, _inspection_parts(inspection or {}))
+    parts = _inspection_parts(inspection or {})
     semantic_scene = (inspection or {}).get("semantic_scene")
+    plan = spine_brain.plan_animation(request, parts)
+    intent = spine_prompt_intelligence.interpret(
+        request, source_parts=parts, semantic_scene=semantic_scene,
+    )
+    plan["prompt_intent"] = intent
+    plan["effective_request"] = intent["expanded_request"]
     plan["motion_plan"] = spine_motion_intelligence.build_motion_plan(
-        request, plan["asset_type"], plan["animations"], semantic_scene,
+        intent["expanded_request"], plan["asset_type"], plan["animations"], semantic_scene,
     )
     if inspection:
         plan["inspection"] = inspection
@@ -127,21 +151,31 @@ def understand_animation(request: str, source: str = "", source_group: str = "",
 @mcp.tool()
 def plan_motion(request: str, asset_type: str = "biped",
                 animations: list[str] | None = None) -> dict:
-    """Plan V4 style, pose beats, timing, energy hierarchy, asymmetry, contacts and FX cues."""
-    return spine_motion_intelligence.build_motion_plan(
-        request, asset_type, animations or ["idle"], None,
+    """Plan style, pose beats, timing, energy hierarchy, asymmetry, contacts and FX cues."""
+    intent = spine_prompt_intelligence.interpret(request)
+    plan = spine_motion_intelligence.build_motion_plan(
+        intent["expanded_request"], asset_type, animations or intent.get("states") or ["idle"], None,
     )
+    plan["prompt_intent"] = intent
+    return plan
 
 
 @mcp.tool()
 def smart_build(source: str, out_dir: str, request: str, name: str = "",
                 source_group: str = "", make_editable: bool = True,
                 make_preview: bool = True, naming_profile: str = "") -> dict:
-    """Natural-language V4 build: semantics, visual anatomy, polished motion and QA."""
+    """Natural-language smart build with prompt inference, acting, juice, render QA and AD gate."""
     inspection = inspect_source(source, source_group, naming_profile)
-    plan = spine_brain.plan_animation(request, _inspection_parts(inspection))
+    parts = _inspection_parts(inspection)
+    semantic_scene = inspection.get("semantic_scene")
+    plan = spine_brain.plan_animation(request, parts)
+    intent = spine_prompt_intelligence.interpret(
+        request, source_parts=parts, semantic_scene=semantic_scene,
+    )
+    plan["prompt_intent"] = intent
+    plan["effective_request"] = intent["expanded_request"]
     motion_plan = spine_motion_intelligence.build_motion_plan(
-        request, plan["asset_type"], plan["animations"], inspection.get("semantic_scene"),
+        intent["expanded_request"], plan["asset_type"], plan["animations"], semantic_scene,
     )
     result = workflow.run_pipeline(
         source, out_dir, name or None,
@@ -153,6 +187,7 @@ def smart_build(source: str, out_dir: str, request: str, name: str = "",
         mesh_quality=plan["mesh_quality"],
         max_weight_influences=plan["max_weight_influences"],
         naming_profile=naming_profile, motion_plan=motion_plan,
+        prompt_intent=intent,
     )
     plan["motion_plan"] = motion_plan
     result["director_plan"] = plan
@@ -168,7 +203,7 @@ def rig_and_animate(source: str, out_dir: str, name: str = "", kind: str = "symb
                     slot_presets: list[str] | None = None,
                     fx_presets: list[str] | None = None,
                     source_group: str = "") -> dict:
-    """Build a deterministic legacy/simple rig. Use smart_build for V4 semantic rigs."""
+    """Build a deterministic legacy/simple rig. Use smart_build for semantic rigs."""
     result = spine_rig.build_rig(
         source, out_dir, name or None, kind, anims,
         clean_mesh=clean_mesh, auto_weight=auto_weight,
@@ -194,8 +229,9 @@ def build_workflow(source: str, out_dir: str, name: str = "",
                    source_group: str = "", make_editable: bool = True,
                    make_preview: bool = True, rig_profile: str = "simple",
                    mesh_quality: str = "adaptive", max_weight_influences: int = 2,
-                   naming_profile: str = "", motion_plan: dict | None = None) -> dict:
-    """Run the complete validated workflow, optionally with Animation Intelligence V4."""
+                   naming_profile: str = "", motion_plan: dict | None = None,
+                   prompt_intent: dict | None = None) -> dict:
+    """Run the complete validated workflow with optional smart animation quality layers."""
     return workflow.run_pipeline(
         source, out_dir, name or None,
         rig_only=rig_only, animations=animations,
@@ -206,6 +242,7 @@ def build_workflow(source: str, out_dir: str, name: str = "",
         rig_profile=rig_profile, mesh_quality=mesh_quality,
         max_weight_influences=max_weight_influences,
         naming_profile=naming_profile, motion_plan=motion_plan,
+        prompt_intent=prompt_intent,
     )
 
 
@@ -229,10 +266,28 @@ def deterministic_critic(runtime_json: str, motion_plan: dict | None = None,
 def engineering_review(runtime_json: str, images_dir: str, out_dir: str,
                        motion_plan: dict | None = None,
                        secondary_chains: dict | None = None) -> dict:
-    """Render representative beats, run deterministic critic checks, and return revision actions."""
+    """Render representative beats, run critic checks, and return revision actions."""
     return spine_engineering_loop.inspect_build(
         runtime_json, images_dir, out_dir,
         motion_plan=motion_plan, secondary_chains=secondary_chains,
+    )
+
+
+@mcp.tool()
+def animation_gauntlet(runtime_json: str, images_dir: str, out_dir: str,
+                       motion_plan: dict | None = None,
+                       secondary_chains: dict | None = None,
+                       performance_report: dict | None = None,
+                       prompt_intent: dict | None = None) -> dict:
+    """Run the strict senior animator/art-director presentation gate.
+
+    Technical validity does not imply approval. The result explicitly says whether the
+    animation is presentation-ready and returns a prioritized revision queue when not.
+    """
+    return spine_ad_gauntlet.review(
+        runtime_json, images_dir, out_dir,
+        motion_plan=motion_plan, secondary_chains=secondary_chains,
+        performance_report=performance_report, prompt_intent=prompt_intent,
     )
 
 
