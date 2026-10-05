@@ -1,17 +1,16 @@
 """Render-space QA for silhouette readability and FX hierarchy.
 
-This is deliberately deterministic. It renders the same beat on a fixed padded canvas
-with FX enabled and disabled, then measures what changed. It is designed to catch the
-kind of problems that valid Spine JSON cannot: muddy silhouettes, collapsed negative
-space, clipping, and glow/flash passes that swallow the character.
+Renders representative beats on a fixed padded canvas. For FX hierarchy it produces
+three views of the exact same beat: full composite, art-only, and FX-only. The FX-only
+pass matters because RGB-difference tests can miss a white/additive glow over already
+white art due to saturation.
 """
 from __future__ import annotations
 
 import copy
-import math
 import os
 
-from PIL import Image, ImageChops
+from PIL import Image
 
 import spine_preview
 
@@ -54,15 +53,31 @@ def fx_slots(data: dict) -> list[str]:
     return names
 
 
-def _without_fx(data: dict, names: list[str]) -> dict:
+def _filter_slots(data: dict, keep_names: set[str] | None = None,
+                  drop_names: set[str] | None = None) -> dict:
     out = copy.deepcopy(data)
-    denied = set(names)
-    out["slots"] = [slot for slot in out.get("slots", []) if slot.get("name") not in denied]
+    keep_names = keep_names or set()
+    drop_names = drop_names or set()
+    if keep_names:
+        out["slots"] = [slot for slot in out.get("slots", []) if slot.get("name") in keep_names]
+    elif drop_names:
+        out["slots"] = [slot for slot in out.get("slots", []) if slot.get("name") not in drop_names]
+    allowed = {slot.get("name") for slot in out.get("slots", [])}
     for animation in out.get("animations", {}).values():
-        if isinstance(animation, dict) and isinstance(animation.get("slots"), dict):
-            for name in denied:
-                animation["slots"].pop(name, None)
+        tracks = animation.get("slots") if isinstance(animation, dict) else None
+        if isinstance(tracks, dict):
+            for name in list(tracks):
+                if name not in allowed:
+                    tracks.pop(name, None)
     return out
+
+
+def _without_fx(data: dict, names: list[str]) -> dict:
+    return _filter_slots(data, drop_names=set(names))
+
+
+def _only_fx(data: dict, names: list[str]) -> dict:
+    return _filter_slots(data, keep_names=set(names))
 
 
 def _alpha_mask(image: Image.Image, size: int = 64, threshold: int = 32) -> tuple[list[int], tuple[int, int]]:
@@ -126,14 +141,14 @@ def _touches_edge(image: Image.Image, margin: int = 1) -> bool:
     return left <= margin or top <= margin or right >= width - margin or bottom >= height - margin
 
 
-def _art_pixels(art: Image.Image, full: Image.Image):
+def _art_pixels(art: Image.Image, other: Image.Image):
     a = art.convert("RGBA")
-    f = full.convert("RGBA")
-    if f.size != a.size:
-        f = f.resize(a.size, Image.Resampling.LANCZOS)
+    b = other.convert("RGBA")
+    if b.size != a.size:
+        b = b.resize(a.size, Image.Resampling.LANCZOS)
     ap = list(a.getdata())
-    fp = list(f.getdata())
-    return [(x, y) for x, y in zip(ap, fp) if x[3] >= 32]
+    bp = list(b.getdata())
+    return [(x, y) for x, y in zip(ap, bp) if x[3] >= 32]
 
 
 def _ssim_art_region(art: Image.Image, full: Image.Image) -> float:
@@ -154,7 +169,7 @@ def _ssim_art_region(art: Image.Image, full: Image.Image) -> float:
     return 1.0 if denominator <= 1e-9 else max(-1.0, min(1.0, numerator / denominator))
 
 
-def _fx_coverage(art: Image.Image, full: Image.Image, rgb_delta: float = 24.0) -> float:
+def _rgb_change_coverage(art: Image.Image, full: Image.Image, rgb_delta: float = 24.0) -> float:
     pairs = _art_pixels(art, full)
     if not pairs:
         return 0.0
@@ -164,6 +179,19 @@ def _fx_coverage(art: Image.Image, full: Image.Image, rgb_delta: float = 24.0) -
         if delta >= rgb_delta:
             changed += 1
     return changed / len(pairs)
+
+
+def _fx_overlap_coverage(art: Image.Image, fx: Image.Image, alpha_threshold: int = 24) -> float:
+    """Fraction of visible art directly covered by visible FX.
+
+    Unlike RGB-difference coverage, this still catches white additive FX over white art,
+    where the full composite can saturate to the same RGB values.
+    """
+    pairs = _art_pixels(art, fx)
+    if not pairs:
+        return 0.0
+    covered = sum(1 for _, effect in pairs if effect[3] >= alpha_threshold)
+    return covered / len(pairs)
 
 
 def _is_flash_time(spec: dict, at: float, fps: int) -> bool:
@@ -196,6 +224,7 @@ def audit(data: dict, images_dir: str, out_dir: str, motion_plan: dict | None = 
     padded = _fixed_bounds(data)
     names = fx_slots(padded)
     art_data = _without_fx(padded, names)
+    fx_data = _only_fx(padded, names) if names else None
     planned = (motion_plan or {}).get("clips", {})
     findings = []
     clips = {}
@@ -210,15 +239,21 @@ def audit(data: dict, images_dir: str, out_dir: str, motion_plan: dict | None = 
         for index, at in enumerate(times):
             full = spine_preview.render_frame(padded, images_dir, clip, at, maxpx=320, transparent=True)
             art = spine_preview.render_frame(art_data, images_dir, clip, at, maxpx=320, transparent=True)
+            fx = (spine_preview.render_frame(fx_data, images_dir, clip, at, maxpx=320, transparent=True)
+                  if fx_data is not None else Image.new("RGBA", art.size, (0,0,0,0)))
             full_path = os.path.join(out_dir, f"{clip}_{index:02d}_{at:.3f}_full.png")
             art_path = os.path.join(out_dir, f"{clip}_{index:02d}_{at:.3f}_art.png")
+            fx_path = os.path.join(out_dir, f"{clip}_{index:02d}_{at:.3f}_fx.png")
             full.save(full_path)
             art.save(art_path)
+            fx.save(fx_path)
 
             mask, mask_size = _alpha_mask(art)
             holes = _holes(mask, mask_size)
             ssim = _ssim_art_region(art, full)
-            coverage = _fx_coverage(art, full)
+            rgb_coverage = _rgb_change_coverage(art, full)
+            overlap_coverage = _fx_overlap_coverage(art, fx)
+            coverage = max(rgb_coverage, overlap_coverage)
             flash = _is_flash_time(spec, at, fps)
             edge = _touches_edge(art)
 
@@ -264,10 +299,12 @@ def audit(data: dict, images_dir: str, out_dir: str, motion_plan: dict | None = 
                 ))
 
             rows.append({
-                "time": at, "full": full_path, "art": art_path,
+                "time": at, "full": full_path, "art": art_path, "fx": fx_path,
                 "silhouette_delta_from_previous": None if pose_delta is None else round(pose_delta, 4),
                 "negative_space_holes": holes,
                 "art_region_ssim": round(ssim, 4),
+                "fx_rgb_change_coverage": round(rgb_coverage, 4),
+                "fx_overlap_coverage": round(overlap_coverage, 4),
                 "fx_coverage_over_art": round(coverage, 4),
                 "flash_window": flash,
                 "touches_padded_edge": edge,
@@ -279,7 +316,7 @@ def audit(data: dict, images_dir: str, out_dir: str, motion_plan: dict | None = 
     medium = sum(item["severity"] == "medium" for item in findings)
     score = max(0, 100 - high * 18 - medium * 6)
     return {
-        "version": 1,
+        "version": 2,
         "checks": [1, 9],
         "fps": fps,
         "fixed_bounds_padding": 0.30,
