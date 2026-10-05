@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 
+import render_qa
 import spine_critic
 import spine_motion_intelligence
 import spine_v5
@@ -22,12 +23,14 @@ KNOWN_TRAPS = [
     {"id": "loop_seam", "rule": "loop endings must reproduce the opening pose/value state"},
     {"id": "secondary_causality", "rule": "hair/cloth/tails react to primary acceleration and stops"},
     {"id": "fx_hierarchy", "rule": "FX supports the pose; it must not wash out the subject or frame"},
+    {"id": "juice_hierarchy", "rule": "extra motion must support the primary pose; more movement is not automatically better"},
 ]
 
 
 def diagnose_visual_report(visual_report: dict, structural_report: dict | None = None,
-                           critic_report: dict | None = None) -> dict:
-    """Convert rendered, structural, and deterministic critic QA into revision actions."""
+                           critic_report: dict | None = None,
+                           render_report: dict | None = None) -> dict:
+    """Convert rendered, structural, curve, and silhouette/FX QA into revision actions."""
     issues = list(visual_report.get("issues", []))
     actions = []
     for issue in issues:
@@ -65,6 +68,18 @@ def diagnose_visual_report(visual_report: dict, structural_report: dict | None =
             "threshold": finding.get("threshold"),
             "change": finding.get("suggested_patch", {}),
         })
+    for finding in (render_report or {}).get("findings", []):
+        priority = 92 if finding.get("severity") == "high" else 68
+        actions.append({
+            "clip": finding.get("clip", ""),
+            "time": finding.get("time"),
+            "priority": priority,
+            "cause": finding.get("kind", "render_qa"),
+            "metric": finding.get("metric"),
+            "value": finding.get("value"),
+            "threshold": finding.get("threshold"),
+            "change": finding.get("suggested_patch", {}),
+        })
     actions.sort(key=lambda item: (-item["priority"], item.get("clip", "")))
     return {"ok": not actions, "actions": actions, "known_traps": KNOWN_TRAPS}
 
@@ -79,23 +94,30 @@ def inspect_build(runtime_json: str, images_dir: str, out_dir: str,
     )
     with open(runtime_json, encoding="utf-8") as handle:
         data = json.load(handle)
+    fps = int(data.get("skeleton", {}).get("fps") or 30)
     structural = spine_motion_intelligence.audit_animation(data, motion_plan)
     critic = spine_critic.audit(
         data, motion_plan=motion_plan,
         secondary_chains=secondary_chains,
-        fps=int(data.get("skeleton", {}).get("fps") or 30),
+        fps=fps,
     )
-    diagnosis = diagnose_visual_report(visual, structural, critic)
+    rendered = render_qa.audit(
+        data, images_dir, os.path.join(out_dir, "render_qa"),
+        motion_plan=motion_plan, fps=fps,
+    )
+    diagnosis = diagnose_visual_report(visual, structural, critic, rendered)
     return {
-        "version": 7,
+        "version": 8,
         "visual": visual,
         "structural": structural,
         "critic": critic,
+        "render_qa": rendered,
         "diagnosis": diagnosis,
         "ready": (
             visual.get("ok", False)
             and structural.get("score", 0) >= 80
             and critic.get("ok", False)
+            and rendered.get("ok", False)
             and not diagnosis["actions"]
         ),
     }
