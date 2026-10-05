@@ -4,9 +4,11 @@ from __future__ import annotations
 import json
 import os
 
+import spine_ad_gauntlet
 import spine_cli
 import spine_guard
 import spine_juice
+import spine_performance
 import spine_preview
 import spine_psd_bridge
 import spine_quality
@@ -17,10 +19,18 @@ import spine_v5
 from spine_validate import validate_rig, write_report
 
 
-def _wants_juice(motion_plan: dict | None) -> bool:
+def _wants_juice(motion_plan: dict | None, prompt_intent: dict | None = None) -> bool:
     style = (motion_plan or {}).get("style", {})
     presets = set(style.get("presets", []))
-    return bool(presets & {"premium_slot", "punchy", "cute"}) or float(style.get("fx", 0)) >= .65
+    intent = prompt_intent or {}
+    intent_styles = set(intent.get("styles", []))
+    return (
+        bool(presets & {"premium_slot", "punchy", "cute"})
+        or bool(intent_styles & {"premium_slot", "casual_game", "punchy", "cute"})
+        or float(style.get("fx", 0)) >= .65
+        or intent.get("quality_target") == "industry_grade"
+        or float(intent.get("energy", 0) or 0) >= .82
+    )
 
 
 def run_pipeline(source: str, out_dir: str, name: str | None = None,
@@ -36,6 +46,7 @@ def run_pipeline(source: str, out_dir: str, name: str | None = None,
                  max_weight_influences: int = 2,
                  naming_profile: str = "",
                  motion_plan: dict | None = None,
+                 prompt_intent: dict | None = None,
                  visual_qa: bool = True) -> dict:
     source = os.path.abspath(os.path.expanduser(source))
     out_dir = os.path.abspath(os.path.expanduser(out_dir))
@@ -77,6 +88,7 @@ def run_pipeline(source: str, out_dir: str, name: str | None = None,
     runtime_json = result["files"]["json"]
     images_dir = os.path.join(out_dir, "images")
     transactions = []
+    smart_report = None
 
     if smart_enabled:
         def smart_stage(staged_json: str):
@@ -123,7 +135,7 @@ def run_pipeline(source: str, out_dir: str, name: str | None = None,
         # Premium casual/slot prompts get a bounded character-life pass after the
         # primary posing exists. It adds overlap/asymmetry/settle accents but is
         # deliberately skipped for restrained styles.
-        if motion_plan and _wants_juice(motion_plan):
+        if motion_plan and _wants_juice(motion_plan, prompt_intent):
             def juice_stage(staged_json: str):
                 with open(staged_json, encoding="utf-8") as handle:
                     data = json.load(handle)
@@ -137,6 +149,26 @@ def run_pipeline(source: str, out_dir: str, name: str | None = None,
             )
             transactions.append(transaction)
             result["character_juice"] = juice_report
+
+        # Facial/performance acting is a separate layer from generic juice. It uses
+        # the semantic eye/pupil/brow/mouth/jaw controls created by the smart rig and
+        # stays a no-op when those controls do not exist.
+        if motion_plan and prompt_intent:
+            def performance_stage(staged_json: str):
+                with open(staged_json, encoding="utf-8") as handle:
+                    data = json.load(handle)
+                acted, report = spine_performance.apply(
+                    data, motion_plan, smart_report, prompt_intent,
+                )
+                with open(staged_json, "w", encoding="utf-8") as handle:
+                    json.dump(acted, handle, separators=(",", ":"))
+                return report
+
+            performance_report, transaction = spine_guard.run_json_stage(
+                runtime_json, "performance-acting-v1", performance_stage,
+            )
+            transactions.append(transaction)
+            result["performance_acting"] = performance_report
 
     # V5 runs before .spine creation so PSD compositing semantics and safe
     # visual-QA fixes are already present when the licensed CLI imports JSON.
@@ -153,13 +185,26 @@ def run_pipeline(source: str, out_dir: str, name: str | None = None,
         transactions.append(transaction)
         result["visual_intelligence"] = visual_report
 
+    # The animator/art-director gate is intentionally stricter than file validation.
+    # It can mark a technically valid build as WIP and provides a ranked revision queue.
+    if visual_qa and not rig_only and motion_plan and os.path.isdir(images_dir):
+        result["ad_gauntlet"] = spine_ad_gauntlet.review(
+            runtime_json, images_dir, out_dir,
+            motion_plan=motion_plan,
+            secondary_chains=(smart_report or {}).get("secondary_chains", {}),
+            performance_report=result.get("performance_acting"),
+            prompt_intent=prompt_intent,
+        )
+
     result["gauntlet"] = {
-        "version": 8,
+        "version": 9,
         "transactions": transactions,
         "runtime_state": spine_guard.file_state(runtime_json),
         "backup_count": len(spine_guard.list_backups(runtime_json)),
         "shared_psd_parser": bool(source_bridge),
         "character_juice": bool(result.get("character_juice")),
+        "performance_acting": bool(result.get("performance_acting")),
+        "presentation_ready": bool(result.get("ad_gauntlet", {}).get("presentation_ready")),
         "rules": [
             "layered PSD builds use one shared parser/extractor",
             "each mutating JSON stage runs on a temporary copy",
@@ -167,6 +212,8 @@ def run_pipeline(source: str, out_dir: str, name: str | None = None,
             "bounded backups permit rollback without accumulating unbounded files",
             "SHA-256 state pins make stale edits detectable",
             "premium casual/slot juice is added after primary posing and before rendered QA",
+            "facial acting is staged separately from generic body juice",
+            "technical validation never upgrades a WIP to presentation-ready; only the senior animation gauntlet can do that",
         ],
     }
 
@@ -207,8 +254,11 @@ def run_pipeline(source: str, out_dir: str, name: str | None = None,
         "naming_profile": naming_profile,
         "animation_intelligence_v4": bool(motion_plan),
         "character_juice_v1": bool(result.get("character_juice")),
+        "performance_acting_v1": bool(result.get("performance_acting")),
+        "art_director_gauntlet_v1": bool(result.get("ad_gauntlet")),
+        "presentation_ready": bool(result.get("ad_gauntlet", {}).get("presentation_ready")),
         "visual_intelligence_v5": visual_qa,
-        "gauntlet_hardening_v8": True,
+        "gauntlet_hardening_v9": True,
         "shared_psd_parser_v6": bool(source_bridge),
     }
     if result.get("smart_rig"):
@@ -217,6 +267,10 @@ def run_pipeline(source: str, out_dir: str, name: str | None = None,
         report["animation_intelligence"] = result["animation_intelligence"]
     if result.get("character_juice"):
         report["character_juice"] = result["character_juice"]
+    if result.get("performance_acting"):
+        report["performance_acting"] = result["performance_acting"]
+    if result.get("ad_gauntlet"):
+        report["ad_gauntlet"] = result["ad_gauntlet"]
     if result.get("visual_intelligence"):
         report["visual_intelligence"] = result["visual_intelligence"]
     report["gauntlet"] = result["gauntlet"]
